@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gorilla/websocket"
 	"github.com/taigrr/omi/selfhost/internal/config"
 	"github.com/taigrr/omi/selfhost/internal/store"
 	"github.com/taigrr/omi/selfhost/internal/types"
@@ -29,7 +30,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("GET /v1/config", s.handleConfig)
 	mux.HandleFunc("POST /v1/sync-local-files", s.handleSyncLocalFiles)
-	mux.HandleFunc("GET /v4/listen", s.handleListenPlaceholder)
+	mux.HandleFunc("GET /v4/listen", s.handleListenWebSocket)
 	return logging(mux)
 }
 
@@ -108,11 +109,43 @@ func (s *Server) handleSyncLocalFiles(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleListenPlaceholder(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]any{
-		"error": "streaming transcription websocket not implemented yet",
-		"hint":  "use this backend first for endpoint config and file ingest, then add websocket streaming",
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+func (s *Server) handleListenWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("upgrade websocket: %v", err), http.StatusBadRequest)
+		return
+	}
+	defer conn.Close()
+
+	_ = conn.WriteJSON(map[string]any{
+		"type":    "ready",
+		"message": "selfhost websocket connected",
 	})
+
+	for {
+		messageType, payload, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+
+		if messageType == websocket.TextMessage {
+			_ = conn.WriteJSON(map[string]any{
+				"type":    "ack",
+				"bytes":   len(payload),
+				"preview": string(payload),
+			})
+			continue
+		}
+
+		_ = conn.WriteJSON(map[string]any{
+			"type":  "audio_chunk_received",
+			"bytes": len(payload),
+		})
+	}
 }
 
 func deriveAgentWS(base string) string {

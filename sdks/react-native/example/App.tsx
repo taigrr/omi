@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import DocumentPicker from 'react-native-document-picker';
 import {
   Alert,
   Linking,
@@ -9,6 +10,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { BleManager, State, Subscription } from 'react-native-ble-plx';
@@ -54,6 +56,8 @@ export default function App() {
   const [statusMessage, setStatusMessage] = useState('Ready to scan');
   const [apiBaseUrl, setApiBaseUrl] = useState('http://127.0.0.1:8080/');
   const [agentWsUrl, setAgentWsUrl] = useState('ws://127.0.0.1:8080/v1/agent/ws');
+  const [backendHealth, setBackendHealth] = useState('unknown');
+  const [uploadResult, setUploadResult] = useState('none');
 
   useEffect(() => {
     const loadConfig = async () => {
@@ -276,6 +280,52 @@ export default function App() {
     if (ok) setMicGain(gain);
   };
 
+  const normalizeBaseUrl = (value: string) => (value.endsWith('/') ? value : `${value}/`);
+
+  const checkBackend = async () => {
+    try {
+      const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}v1/health`);
+      const body = await response.json();
+      setBackendHealth(response.ok ? 'healthy' : `error ${response.status}`);
+      setStatusMessage(response.ok ? `Backend healthy: ${JSON.stringify(body)}` : `Backend check failed: ${response.status}`);
+    } catch (error) {
+      setBackendHealth('unreachable');
+      setStatusMessage(`Backend check failed: ${String(error)}`);
+    }
+  };
+
+  const uploadFileToSelfhost = async () => {
+    try {
+      const picked = await DocumentPicker.pickSingle({ copyTo: 'cachesDirectory' });
+      const form = new FormData();
+      form.append('files', {
+        uri: picked.fileCopyUri || picked.uri,
+        name: picked.name || 'upload.bin',
+        type: picked.type || 'application/octet-stream',
+      } as never);
+
+      const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}v1/sync-local-files`, {
+        method: 'POST',
+        body: form,
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        setUploadResult(`upload failed (${response.status})`);
+        setStatusMessage(`Upload failed: ${text}`);
+        return;
+      }
+      setUploadResult(text);
+      setStatusMessage('Uploaded file to selfhost backend');
+    } catch (error) {
+      if (DocumentPicker.isCancel(error)) {
+        setStatusMessage('Upload cancelled');
+        return;
+      }
+      setUploadResult(`error: ${String(error)}`);
+      setStatusMessage(`Upload error: ${String(error)}`);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
@@ -303,6 +353,37 @@ export default function App() {
               <Text style={styles.deviceMeta}>RSSI {device.rssi} dBm</Text>
             </Pressable>
           ))}
+        </Section>
+
+        <Section title="Self-hosted backend">
+          <TextInput
+            style={styles.input}
+            value={apiBaseUrl}
+            onChangeText={setApiBaseUrl}
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="http://192.168.1.10:8080/"
+            placeholderTextColor={THEME.subtext}
+          />
+          <TextInput
+            style={styles.input}
+            value={agentWsUrl}
+            onChangeText={setAgentWsUrl}
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="ws://192.168.1.10:8080/v1/agent/ws"
+            placeholderTextColor={THEME.subtext}
+          />
+          <KeyValue label="Backend health" value={backendHealth} />
+          <KeyValue label="Last upload" value={uploadResult} />
+          <View style={styles.rowWrap}>
+            <SecondaryButton title="Use localhost" onPress={() => { setApiBaseUrl('http://127.0.0.1:8080/'); setAgentWsUrl('ws://127.0.0.1:8080/v1/agent/ws'); }} />
+            <SecondaryButton title="Use LAN sample" onPress={() => { setApiBaseUrl('http://192.168.1.10:8080/'); setAgentWsUrl('ws://192.168.1.10:8080/v1/agent/ws'); }} />
+            <PrimaryButton title="Save endpoints" onPress={saveSelfHostedConfig} />
+            <SecondaryButton title="Reset" onPress={resetSelfHostedConfig} />
+            <PrimaryButton title="Check backend" onPress={checkBackend} />
+            <PrimaryButton title="Upload file" onPress={uploadFileToSelfhost} />
+          </View>
         </Section>
 
         <Section title="Overview">
@@ -504,6 +585,15 @@ const styles = StyleSheet.create({
   },
   muted: {
     color: THEME.subtext,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: THEME.text,
+    backgroundColor: THEME.panelAlt,
   },
   inlineItem: {
     paddingVertical: 6,
