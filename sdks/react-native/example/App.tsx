@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Alert,
   Linking,
@@ -51,6 +52,25 @@ export default function App() {
   const [ledDimRatio, setLedDimRatio] = useState<number | null>(null);
   const [micGain, setMicGain] = useState<number | null>(null);
   const [statusMessage, setStatusMessage] = useState('Ready to scan');
+  const [apiBaseUrl, setApiBaseUrl] = useState('http://127.0.0.1:8080/');
+  const [agentWsUrl, setAgentWsUrl] = useState('ws://127.0.0.1:8080/v1/agent/ws');
+
+  useEffect(() => {
+    const loadConfig = async () => {
+      try {
+        const [savedApiBaseUrl, savedAgentWsUrl] = await Promise.all([
+          AsyncStorage.getItem('omi.selfHosted.apiBaseUrl'),
+          AsyncStorage.getItem('omi.selfHosted.agentWsUrl'),
+        ]);
+        if (savedApiBaseUrl) setApiBaseUrl(savedApiBaseUrl);
+        if (savedAgentWsUrl) setAgentWsUrl(savedAgentWsUrl);
+      } catch (error) {
+        setStatusMessage(`Failed to load self-host config: ${String(error)}`);
+      }
+    };
+
+    loadConfig();
+  }, []);
 
   useEffect(() => {
     const manager = new BleManager();
@@ -216,6 +236,34 @@ export default function App() {
   const playHaptic = async () => {
     const ok = await omi.playHaptic(1);
     setStatusMessage(ok ? 'Played haptic' : 'Haptic failed');
+  };
+
+  const saveSelfHostedConfig = async () => {
+    try {
+      await Promise.all([
+        AsyncStorage.setItem('omi.selfHosted.apiBaseUrl', apiBaseUrl),
+        AsyncStorage.setItem('omi.selfHosted.agentWsUrl', agentWsUrl),
+      ]);
+      setStatusMessage('Saved self-hosted endpoint config');
+    } catch (error) {
+      setStatusMessage(`Failed to save self-host config: ${String(error)}`);
+    }
+  };
+
+  const resetSelfHostedConfig = async () => {
+    const defaultApi = 'http://127.0.0.1:8080/';
+    const defaultWs = 'ws://127.0.0.1:8080/v1/agent/ws';
+    setApiBaseUrl(defaultApi);
+    setAgentWsUrl(defaultWs);
+    try {
+      await Promise.all([
+        AsyncStorage.setItem('omi.selfHosted.apiBaseUrl', defaultApi),
+        AsyncStorage.setItem('omi.selfHosted.agentWsUrl', defaultWs),
+      ]);
+      setStatusMessage('Reset self-hosted endpoint config');
+    } catch (error) {
+      setStatusMessage(`Failed to reset self-host config: ${String(error)}`);
+    }
   };
 
   const adjustLed = async (ratio: number) => {
