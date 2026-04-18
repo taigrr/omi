@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, ScrollView, Alert, Platform, Linking, TextInput } from 'react-native';
-import { OmiConnection, BleAudioCodec, OmiDevice } from '@omiai/omi-react-native';
+import { OmiConnection, BleAudioCodec, OmiDevice, StorageFileInfo, StorageStatus } from '@omiai/omi-react-native';
 import { BleManager, State, Subscription } from 'react-native-ble-plx';
 
 export default function App() {
@@ -13,6 +13,8 @@ export default function App() {
   const [isListeningAudio, setIsListeningAudio] = useState<boolean>(false);
   const [audioPacketsReceived, setAudioPacketsReceived] = useState<number>(0);
   const [batteryLevel, setBatteryLevel] = useState<number>(-1);
+  const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
+  const [storageFiles, setStorageFiles] = useState<StorageFileInfo[]>([]);
   const [buttonEvents, setButtonEvents] = useState<number[][]>([]);
   const [enableTranscription, setEnableTranscription] = useState<boolean>(false);
   const [deepgramApiKey, setDeepgramApiKey] = useState<string>('');
@@ -225,6 +227,8 @@ export default function App() {
       setConnected(false);
       setCodec(null);
       setBatteryLevel(-1);
+      setStorageStatus(null);
+      setStorageFiles([]);
       setButtonEvents([]);
     } catch (error) {
       console.error('Disconnect error:', error);
@@ -505,6 +509,29 @@ export default function App() {
     }
   };
 
+  const loadStorageFiles = async () => {
+    try {
+      if (!connected || !omiConnection.isConnected()) {
+        Alert.alert('Not Connected', 'Please connect to a device first');
+        return;
+      }
+
+      const status = await omiConnection.getStorageStatus();
+      setStorageStatus(status);
+
+      if (!status || status.fileCount === 0) {
+        setStorageFiles([]);
+        return;
+      }
+
+      const files = await omiConnection.listStorageFiles();
+      setStorageFiles(files);
+    } catch (error) {
+      console.error('Load storage files error:', error);
+      Alert.alert('Error', `Failed to load storage files: ${error}`);
+    }
+  };
+
   const getBatteryLevel = async () => {
     try {
       if (!connected || !omiConnection.isConnected()) {
@@ -640,6 +667,16 @@ export default function App() {
               <Text style={styles.buttonText}>Get Battery Level</Text>
             </TouchableOpacity>
 
+            <TouchableOpacity
+              style={[
+                styles.button,
+                { marginTop: 15 }
+              ]}
+              onPress={loadStorageFiles}
+            >
+              <Text style={styles.buttonText}>Load Storage Files</Text>
+            </TouchableOpacity>
+
             {batteryLevel >= 0 && (
               <View style={styles.batteryContainer}>
                 <Text style={styles.batteryTitle}>Battery Level:</Text>
@@ -647,6 +684,24 @@ export default function App() {
                   <View style={[styles.batteryLevelBar, { width: `${batteryLevel}%` }]} />
                   <Text style={styles.batteryLevelText}>{batteryLevel}%</Text>
                 </View>
+              </View>
+            )}
+
+            {(storageStatus || storageFiles.length > 0) && (
+              <View style={styles.storageContainer}>
+                <Text style={styles.storageTitle}>Storage Sync Preview</Text>
+                {storageStatus ? (
+                  <Text style={styles.storageText}>
+                    Used: {storageStatus.totalUsedBytes} bytes, Files: {storageStatus.fileCount}
+                  </Text>
+                ) : (
+                  <Text style={styles.storageText}>Storage status unavailable</Text>
+                )}
+                {storageFiles.map((file) => (
+                  <Text key={`${file.index}-${file.timestamp}`} style={styles.storageFileText}>
+                    #{file.index}  ts={file.timestamp}  size={file.sizeBytes}
+                  </Text>
+                ))}
               </View>
             )}
 
@@ -998,6 +1053,30 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
     color: '#333',
+  },
+  storageContainer: {
+    marginTop: 15,
+    padding: 12,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: '#5856D6',
+  },
+  storageTitle: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#555',
+    marginBottom: 8,
+  },
+  storageText: {
+    color: '#333',
+    marginBottom: 4,
+  },
+  storageFileText: {
+    color: '#333',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 12,
+    marginBottom: 4,
   },
   buttonEventsContainer: {
     marginTop: 15,

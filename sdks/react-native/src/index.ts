@@ -14,7 +14,9 @@ export type {
   OmiNativeModule,
   AudioProcessingOptions,
   AudioDataEvent,
-  ConnectionStateEvent
+  ConnectionStateEvent,
+  StorageStatus,
+  StorageFileInfo
 } from './types';
 export { mapCodecToName } from './codecs';
 
