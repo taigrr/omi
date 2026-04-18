@@ -13,6 +13,7 @@ export default function App() {
   const [isListeningAudio, setIsListeningAudio] = useState<boolean>(false);
   const [audioPacketsReceived, setAudioPacketsReceived] = useState<number>(0);
   const [batteryLevel, setBatteryLevel] = useState<number>(-1);
+  const [buttonEvents, setButtonEvents] = useState<number[][]>([]);
   const [enableTranscription, setEnableTranscription] = useState<boolean>(false);
   const [deepgramApiKey, setDeepgramApiKey] = useState<string>('');
   const [transcription, setTranscription] = useState<string>('');
@@ -27,6 +28,7 @@ export default function App() {
   const stopScanRef = useRef<(() => void) | null>(null);
   const bleManagerRef = useRef<BleManager | null>(null);
   const audioSubscriptionRef = useRef<Subscription | null>(null);
+  const buttonSubscriptionRef = useRef<Subscription | null>(null);
 
   useEffect(() => {
     // Initialize BLE Manager
@@ -185,6 +187,16 @@ export default function App() {
 
       if (success) {
         setConnected(true);
+
+        if (buttonSubscriptionRef.current) {
+          await omiConnection.stopButtonListener(buttonSubscriptionRef.current);
+          buttonSubscriptionRef.current = null;
+        }
+
+        const buttonSub = await omiConnection.startButtonListener((bytes) => {
+          setButtonEvents((prev) => [...prev.slice(-9), bytes]);
+        });
+        buttonSubscriptionRef.current = buttonSub;
       } else {
         setConnected(false);
         Alert.alert('Connection Failed', 'Could not connect to device');
@@ -204,10 +216,16 @@ export default function App() {
       }
 
 
+      if (buttonSubscriptionRef.current) {
+        await omiConnection.stopButtonListener(buttonSubscriptionRef.current);
+        buttonSubscriptionRef.current = null;
+      }
+
       await omiConnection.disconnect();
       setConnected(false);
       setCodec(null);
       setBatteryLevel(-1);
+      setButtonEvents([]);
     } catch (error) {
       console.error('Disconnect error:', error);
     }
@@ -314,11 +332,7 @@ export default function App() {
         diarize: 'true'
       });
 
-      const ws = new WebSocket(`wss://api.deepgram.com/v1/listen?${params.toString()}`, [], {
-        headers: {
-          'Authorization': `Token ${deepgramApiKey}`
-        }
-      });
+      const ws = new WebSocket(`wss://api.deepgram.com/v1/listen?${params.toString()}`);
 
       ws.onopen = () => {
         console.log('Deepgram WebSocket connection established');
@@ -476,6 +490,21 @@ export default function App() {
     }
   };
 
+  const syncDeviceTime = async () => {
+    try {
+      if (!connected || !omiConnection.isConnected()) {
+        Alert.alert('Not Connected', 'Please connect to a device first');
+        return;
+      }
+
+      await omiConnection.syncTime();
+      Alert.alert('Time Sync', 'Device time synced successfully');
+    } catch (error) {
+      console.error('Time sync error:', error);
+      Alert.alert('Error', `Failed to sync device time: ${error}`);
+    }
+  };
+
   const getBatteryLevel = async () => {
     try {
       if (!connected || !omiConnection.isConnected()) {
@@ -587,6 +616,13 @@ export default function App() {
               <Text style={styles.buttonText}>Get Audio Codec</Text>
             </TouchableOpacity>
 
+            <TouchableOpacity
+              style={[styles.button, { marginTop: 15 }]}
+              onPress={syncDeviceTime}
+            >
+              <Text style={styles.buttonText}>Sync Device Time</Text>
+            </TouchableOpacity>
+
             {codec && (
               <View style={styles.codecContainer}>
                 <Text style={styles.codecTitle}>Current Audio Codec:</Text>
@@ -613,6 +649,17 @@ export default function App() {
                 </View>
               </View>
             )}
+
+            <View style={styles.buttonEventsContainer}>
+              <Text style={styles.buttonEventsTitle}>Recent Button Events</Text>
+              {buttonEvents.length === 0 ? (
+                <Text style={styles.buttonEventsEmpty}>No button events yet</Text>
+              ) : (
+                buttonEvents.map((event, idx) => (
+                  <Text key={idx} style={styles.buttonEventText}>{JSON.stringify(event)}</Text>
+                ))
+              )}
+            </View>
 
             <View style={styles.audioControls}>
               <TouchableOpacity
@@ -951,6 +998,30 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
     color: '#333',
+  },
+  buttonEventsContainer: {
+    marginTop: 15,
+    padding: 12,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: '#007AFF',
+  },
+  buttonEventsTitle: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#555',
+    marginBottom: 8,
+  },
+  buttonEventsEmpty: {
+    color: '#666',
+    fontStyle: 'italic',
+  },
+  buttonEventText: {
+    color: '#333',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 12,
+    marginBottom: 4,
   },
   transcriptionContainer: {
     marginTop: 20,

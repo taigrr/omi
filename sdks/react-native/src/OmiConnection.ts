@@ -6,6 +6,10 @@ import { Platform } from 'react-native';
 const OMI_SERVICE_UUID = '19b10000-e8f2-537e-4f6c-d104768a1214';
 const AUDIO_CODEC_CHARACTERISTIC_UUID = '19b10002-e8f2-537e-4f6c-d104768a1214';
 const AUDIO_DATA_STREAM_CHARACTERISTIC_UUID = '19b10001-e8f2-537e-4f6c-d104768a1214';
+const BUTTON_SERVICE_UUID = '23ba7924-0000-1000-7450-346eac492e92';
+const BUTTON_TRIGGER_CHARACTERISTIC_UUID = '23ba7925-0000-1000-7450-346eac492e92';
+const TIME_SYNC_SERVICE_UUID = '19b10030-e8f2-537e-4f6c-d104768a1214';
+const TIME_SYNC_WRITE_CHARACTERISTIC_UUID = '19b10031-e8f2-537e-4f6c-d104768a1214';
 
 // Battery service UUIDs
 const BATTERY_SERVICE_UUID = '0000180f-0000-1000-8000-00805f9b34fb';
@@ -371,6 +375,126 @@ export class OmiConnection {
     if (subscription) {
       subscription.remove();
     }
+  }
+
+  /**
+   * Start listening for button trigger events.
+   */
+  async startButtonListener(
+    onButtonEvent: (bytes: number[]) => void
+  ): Promise<Subscription | null> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const buttonService = services.find(
+        (service: any) => service.uuid.toLowerCase() === BUTTON_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!buttonService) {
+        console.error('Button service not found');
+        return null;
+      }
+
+      const characteristics = await buttonService.characteristics();
+      const buttonCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === BUTTON_TRIGGER_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!buttonCharacteristic) {
+        console.error('Button trigger characteristic not found');
+        return null;
+      }
+
+      return buttonCharacteristic.monitor((error: any, characteristic: any) => {
+        if (error) {
+          console.error('Button trigger notification error:', error);
+          return;
+        }
+
+        if (characteristic?.value) {
+          try {
+            const bytes = this.base64ToBytes(characteristic.value);
+            onButtonEvent(Array.from(bytes));
+          } catch (decodeError) {
+            console.error('Error decoding button event:', decodeError);
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error starting button listener:', error);
+      return null;
+    }
+  }
+
+  async stopButtonListener(subscription: Subscription): Promise<void> {
+    if (subscription) {
+      subscription.remove();
+    }
+  }
+
+  /**
+   * Sync current unix epoch seconds to the device.
+   */
+  async syncTime(epochSeconds?: number): Promise<void> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    const services = await this.device.services();
+    const timeSyncService = services.find(
+      (service: any) => service.uuid.toLowerCase() === TIME_SYNC_SERVICE_UUID.toLowerCase()
+    );
+
+    if (!timeSyncService) {
+      throw new Error('Time sync service not found');
+    }
+
+    const characteristics = await timeSyncService.characteristics();
+    const timeSyncCharacteristic = characteristics.find(
+      (char: any) => char.uuid.toLowerCase() === TIME_SYNC_WRITE_CHARACTERISTIC_UUID.toLowerCase()
+    );
+
+    if (!timeSyncCharacteristic) {
+      throw new Error('Time sync characteristic not found');
+    }
+
+    const value = epochSeconds ?? Math.floor(Date.now() / 1000);
+    const bytes = new Uint8Array([
+      value & 0xff,
+      (value >> 8) & 0xff,
+      (value >> 16) & 0xff,
+      (value >> 24) & 0xff,
+    ]);
+
+    const base64Value = this.bytesToBase64(bytes);
+    await timeSyncCharacteristic.writeWithResponse(base64Value);
+  }
+
+  private bytesToBase64(bytes: Uint8Array): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let result = '';
+    let i = 0;
+
+    while (i < bytes.length) {
+      const byte1 = bytes[i++] ?? 0;
+      const byte2 = i < bytes.length ? bytes[i++] ?? 0 : NaN;
+      const byte3 = i < bytes.length ? bytes[i++] ?? 0 : NaN;
+
+      const enc1 = byte1 >> 2;
+      const enc2 = ((byte1 & 3) << 4) | ((byte2 || 0) >> 4);
+      const enc3 = Number.isNaN(byte2) ? 64 : (((byte2 as number) & 15) << 2) | ((byte3 || 0) >> 6);
+      const enc4 = Number.isNaN(byte3) ? 64 : ((byte3 as number) & 63);
+
+      result += chars.charAt(enc1);
+      result += chars.charAt(enc2);
+      result += enc3 === 64 ? '=' : chars.charAt(enc3);
+      result += enc4 === 64 ? '=' : chars.charAt(enc4);
+    }
+
+    return result;
   }
 
   /**
