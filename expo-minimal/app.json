@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "Omi Minimal",
+    "slug": "omi-minimal",
+    "scheme": "omiminimal",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "plugins": ["expo-router"],
+    "experiments": {"typedRoutes": true},
+    "ios": {
+      "bundleIdentifier": "com.taigrr.omiminimal",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "Connect to your Omi device.",
+        "NSBluetoothPeripheralUsageDescription": "Connect to your Omi device."
+      }
+    },
+    "android": {
+      "package": "com.taigrr.omiminimal",
+      "permissions": [
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
+    }
+  }
+}
