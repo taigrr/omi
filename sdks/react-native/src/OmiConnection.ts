@@ -15,6 +15,8 @@ const STORAGE_CONTROL_CHARACTERISTIC_UUID = '19b10052-e8f2-537e-4f6c-d104768a121
 const STORAGE_DATA_STREAM_CHARACTERISTIC_UUID = '19b10051-e8f2-537e-4f6c-d104768a1214';
 const STORAGE_CMD_LIST_FILES = 0x10;
 const STORAGE_CMD_READ_FILE = 0x11;
+const STORAGE_CMD_DELETE_FILE = 0x12;
+const STORAGE_CMD_STOP_SYNC = 0x03;
 const STORAGE_STATUS_TRANSFER_END = 100;
 
 // Battery service UUIDs
@@ -832,6 +834,127 @@ export class OmiConnection {
         reject(error);
       }
     });
+  }
+
+  async deleteStorageFile(fileIndex: number, timeoutMs: number = 5000): Promise<boolean> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    const services = await this.device.services();
+    const storageService = services.find(
+      (service: any) => service.uuid.toLowerCase() === STORAGE_SERVICE_UUID.toLowerCase()
+    );
+
+    if (!storageService) {
+      throw new Error('Storage service not found');
+    }
+
+    const characteristics = await storageService.characteristics();
+    const storageDataCharacteristic = characteristics.find(
+      (char: any) => char.uuid.toLowerCase() === STORAGE_DATA_STREAM_CHARACTERISTIC_UUID.toLowerCase()
+    );
+
+    if (!storageDataCharacteristic) {
+      throw new Error('Storage data characteristic not found');
+    }
+
+    return await new Promise<boolean>((resolve, reject) => {
+      let settled = false;
+      let subscription: Subscription | null = null;
+
+      const cleanup = () => {
+        if (subscription) {
+          subscription.remove();
+          subscription = null;
+        }
+      };
+
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(false);
+      }, timeoutMs);
+
+      try {
+        subscription = storageDataCharacteristic.monitor((error: any, characteristic: any) => {
+          if (settled) return;
+
+          if (error) {
+            settled = true;
+            clearTimeout(timer);
+            cleanup();
+            reject(error);
+            return;
+          }
+
+          if (!characteristic?.value) {
+            return;
+          }
+
+          const bytes = this.base64ToBytes(characteristic.value);
+          if (bytes.length < 1) {
+            return;
+          }
+
+          settled = true;
+          clearTimeout(timer);
+          cleanup();
+          resolve((bytes[0] ?? 0xff) === 0);
+        });
+
+        const command = this.bytesToBase64(new Uint8Array([
+          STORAGE_CMD_DELETE_FILE,
+          fileIndex & 0xff,
+        ]));
+
+        storageDataCharacteristic.writeWithResponse(command).catch((writeError: any) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          cleanup();
+          reject(writeError);
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        cleanup();
+        reject(error);
+      }
+    });
+  }
+
+  async stopStorageSync(): Promise<boolean> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const storageService = services.find(
+        (service: any) => service.uuid.toLowerCase() === STORAGE_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!storageService) {
+        throw new Error('Storage service not found');
+      }
+
+      const characteristics = await storageService.characteristics();
+      const storageDataCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === STORAGE_DATA_STREAM_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!storageDataCharacteristic) {
+        throw new Error('Storage data characteristic not found');
+      }
+
+      const command = this.bytesToBase64(new Uint8Array([STORAGE_CMD_STOP_SYNC]));
+      await storageDataCharacteristic.writeWithResponse(command);
+      return true;
+    } catch (error) {
+      console.error('Error stopping storage sync:', error);
+      return false;
+    }
   }
 
   /**

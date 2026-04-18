@@ -16,6 +16,7 @@ export default function App() {
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
   const [storageFiles, setStorageFiles] = useState<StorageFileInfo[]>([]);
   const [downloadedStorageFile, setDownloadedStorageFile] = useState<DownloadedStorageFile | null>(null);
+  const [lastStorageDeleteResult, setLastStorageDeleteResult] = useState<string>('');
   const [buttonEvents, setButtonEvents] = useState<number[][]>([]);
   const [enableTranscription, setEnableTranscription] = useState<boolean>(false);
   const [deepgramApiKey, setDeepgramApiKey] = useState<string>('');
@@ -560,6 +561,45 @@ export default function App() {
     }
   };
 
+  const deleteFirstStorageFile = async () => {
+    try {
+      if (!connected || !omiConnection.isConnected()) {
+        Alert.alert('Not Connected', 'Please connect to a device first');
+        return;
+      }
+
+      const firstFile = storageFiles[0];
+      if (!firstFile) {
+        Alert.alert('No Files', 'Load storage files first');
+        return;
+      }
+
+      const deleted = await omiConnection.deleteStorageFile(firstFile.index);
+      setLastStorageDeleteResult(`Delete file #${firstFile.index}: ${deleted ? 'ok' : 'failed'}`);
+      if (deleted) {
+        setStorageFiles((prev) => prev.filter((file) => file.index !== firstFile.index));
+      }
+    } catch (error) {
+      console.error('Delete storage file error:', error);
+      Alert.alert('Error', `Failed to delete storage file: ${error}`);
+    }
+  };
+
+  const stopStorageSync = async () => {
+    try {
+      if (!connected || !omiConnection.isConnected()) {
+        Alert.alert('Not Connected', 'Please connect to a device first');
+        return;
+      }
+
+      const ok = await omiConnection.stopStorageSync();
+      Alert.alert('Stop Storage Sync', ok ? 'Stop command sent' : 'Stop command failed');
+    } catch (error) {
+      console.error('Stop storage sync error:', error);
+      Alert.alert('Error', `Failed to stop storage sync: ${error}`);
+    }
+  };
+
   const getBatteryLevel = async () => {
     try {
       if (!connected || !omiConnection.isConnected()) {
@@ -716,6 +756,27 @@ export default function App() {
               <Text style={styles.buttonText}>Download First Storage File</Text>
             </TouchableOpacity>
 
+            <TouchableOpacity
+              style={[
+                styles.button,
+                { marginTop: 15 }
+              ]}
+              onPress={deleteFirstStorageFile}
+              disabled={storageFiles.length === 0}
+            >
+              <Text style={styles.buttonText}>Delete First Storage File</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.button,
+                { marginTop: 15 }
+              ]}
+              onPress={stopStorageSync}
+            >
+              <Text style={styles.buttonText}>Stop Storage Sync</Text>
+            </TouchableOpacity>
+
             {batteryLevel >= 0 && (
               <View style={styles.batteryContainer}>
                 <Text style={styles.batteryTitle}>Battery Level:</Text>
@@ -746,6 +807,9 @@ export default function App() {
                     Downloaded file #{downloadedStorageFile.fileIndex}: {downloadedStorageFile.frameCount} frames, {downloadedStorageFile.rawBytesReceived} raw bytes, complete={String(downloadedStorageFile.complete)}
                   </Text>
                 )}
+                {lastStorageDeleteResult ? (
+                  <Text style={styles.storageFileText}>{lastStorageDeleteResult}</Text>
+                ) : null}
               </View>
             )}
 
