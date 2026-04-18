@@ -17,6 +17,9 @@ export default function App() {
   const [storageFiles, setStorageFiles] = useState<StorageFileInfo[]>([]);
   const [downloadedStorageFile, setDownloadedStorageFile] = useState<DownloadedStorageFile | null>(null);
   const [lastStorageDeleteResult, setLastStorageDeleteResult] = useState<string>('');
+  const [featuresValue, setFeaturesValue] = useState<number>(0);
+  const [ledDimRatio, setLedDimRatio] = useState<number | null>(null);
+  const [micGain, setMicGain] = useState<number | null>(null);
   const [buttonEvents, setButtonEvents] = useState<number[][]>([]);
   const [enableTranscription, setEnableTranscription] = useState<boolean>(false);
   const [deepgramApiKey, setDeepgramApiKey] = useState<string>('');
@@ -232,6 +235,9 @@ export default function App() {
       setStorageStatus(null);
       setStorageFiles([]);
       setDownloadedStorageFile(null);
+      setFeaturesValue(0);
+      setLedDimRatio(null);
+      setMicGain(null);
       setButtonEvents([]);
     } catch (error) {
       console.error('Disconnect error:', error);
@@ -600,6 +606,58 @@ export default function App() {
     }
   };
 
+  const loadDeviceSettings = async () => {
+    try {
+      if (!connected || !omiConnection.isConnected()) {
+        Alert.alert('Not Connected', 'Please connect to a device first');
+        return;
+      }
+
+      const [features, led, mic] = await Promise.all([
+        omiConnection.getFeatures(),
+        omiConnection.getLedDimRatio(),
+        omiConnection.getMicGain(),
+      ]);
+
+      setFeaturesValue(features);
+      setLedDimRatio(led);
+      setMicGain(mic);
+    } catch (error) {
+      console.error('Load device settings error:', error);
+      Alert.alert('Error', `Failed to load device settings: ${error}`);
+    }
+  };
+
+  const setLedDimRatioValue = async (ratio: number) => {
+    try {
+      const ok = await omiConnection.setLedDimRatio(ratio);
+      if (ok) {
+        setLedDimRatio(ratio);
+      }
+    } catch (error) {
+      console.error('Set LED dim ratio error:', error);
+    }
+  };
+
+  const setMicGainValue = async (gain: number) => {
+    try {
+      const ok = await omiConnection.setMicGain(gain);
+      if (ok) {
+        setMicGain(gain);
+      }
+    } catch (error) {
+      console.error('Set mic gain error:', error);
+    }
+  };
+
+  const playHaptic = async (level: number) => {
+    try {
+      await omiConnection.playHaptic(level);
+    } catch (error) {
+      console.error('Play haptic error:', error);
+    }
+  };
+
   const getBatteryLevel = async () => {
     try {
       if (!connected || !omiConnection.isConnected()) {
@@ -777,6 +835,26 @@ export default function App() {
               <Text style={styles.buttonText}>Stop Storage Sync</Text>
             </TouchableOpacity>
 
+            <TouchableOpacity
+              style={[
+                styles.button,
+                { marginTop: 15 }
+              ]}
+              onPress={loadDeviceSettings}
+            >
+              <Text style={styles.buttonText}>Load Device Settings</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.button,
+                { marginTop: 15 }
+              ]}
+              onPress={() => playHaptic(1)}
+            >
+              <Text style={styles.buttonText}>Play Haptic</Text>
+            </TouchableOpacity>
+
             {batteryLevel >= 0 && (
               <View style={styles.batteryContainer}>
                 <Text style={styles.batteryTitle}>Battery Level:</Text>
@@ -812,6 +890,37 @@ export default function App() {
                 ) : null}
               </View>
             )}
+
+            <View style={styles.storageContainer}>
+              <Text style={styles.storageTitle}>Settings / Features</Text>
+              <Text style={styles.storageText}>Features: {featuresValue}</Text>
+              <Text style={styles.storageText}>LED Dim Ratio: {ledDimRatio ?? 'n/a'}</Text>
+              <Text style={styles.storageText}>Mic Gain: {micGain ?? 'n/a'}</Text>
+
+              <View style={styles.inlineButtonRow}>
+                <TouchableOpacity style={[styles.button, styles.smallButton]} onPress={() => setLedDimRatioValue(0)}>
+                  <Text style={styles.buttonText}>LED 0</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.button, styles.smallButton]} onPress={() => setLedDimRatioValue(50)}>
+                  <Text style={styles.buttonText}>LED 50</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.button, styles.smallButton]} onPress={() => setLedDimRatioValue(100)}>
+                  <Text style={styles.buttonText}>LED 100</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.inlineButtonRow}>
+                <TouchableOpacity style={[styles.button, styles.smallButton]} onPress={() => setMicGainValue(0)}>
+                  <Text style={styles.buttonText}>Mic 0</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.button, styles.smallButton]} onPress={() => setMicGainValue(50)}>
+                  <Text style={styles.buttonText}>Mic 50</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.button, styles.smallButton]} onPress={() => setMicGainValue(100)}>
+                  <Text style={styles.buttonText}>Mic 100</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
 
             <View style={styles.buttonEventsContainer}>
               <Text style={styles.buttonEventsTitle}>Recent Button Events</Text>
@@ -1185,6 +1294,12 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     fontSize: 12,
     marginBottom: 4,
+  },
+  inlineButtonRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+    flexWrap: 'wrap',
   },
   buttonEventsContainer: {
     marginTop: 15,

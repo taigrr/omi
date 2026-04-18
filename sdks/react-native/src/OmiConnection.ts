@@ -18,6 +18,13 @@ const STORAGE_CMD_READ_FILE = 0x11;
 const STORAGE_CMD_DELETE_FILE = 0x12;
 const STORAGE_CMD_STOP_SYNC = 0x03;
 const STORAGE_STATUS_TRANSFER_END = 100;
+const SETTINGS_SERVICE_UUID = '19b10010-e8f2-537e-4f6c-d104768a1214';
+const SETTINGS_DIM_RATIO_CHARACTERISTIC_UUID = '19b10011-e8f2-537e-4f6c-d104768a1214';
+const SETTINGS_MIC_GAIN_CHARACTERISTIC_UUID = '19b10012-e8f2-537e-4f6c-d104768a1214';
+const FEATURES_SERVICE_UUID = '19b10020-e8f2-537e-4f6c-d104768a1214';
+const FEATURES_CHARACTERISTIC_UUID = '19b10021-e8f2-537e-4f6c-d104768a1214';
+const SPEAKER_SERVICE_UUID = '19b10070-e8f2-537e-4f6c-d104768a1214';
+const SPEAKER_CHARACTERISTIC_UUID = '19b10071-e8f2-537e-4f6c-d104768a1214';
 
 // Battery service UUIDs
 const BATTERY_SERVICE_UUID = '0000180f-0000-1000-8000-00805f9b34fb';
@@ -954,6 +961,220 @@ export class OmiConnection {
     } catch (error) {
       console.error('Error stopping storage sync:', error);
       return false;
+    }
+  }
+
+  async playHaptic(level: number): Promise<boolean> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const speakerService = services.find(
+        (service: any) => service.uuid.toLowerCase() === SPEAKER_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!speakerService) {
+        throw new Error('Speaker service not found');
+      }
+
+      const characteristics = await speakerService.characteristics();
+      const speakerCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === SPEAKER_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!speakerCharacteristic) {
+        throw new Error('Speaker characteristic not found');
+      }
+
+      await speakerCharacteristic.writeWithResponse(this.bytesToBase64(new Uint8Array([level & 0xff])));
+      return true;
+    } catch (error) {
+      console.error('Error playing haptic:', error);
+      return false;
+    }
+  }
+
+  async getFeatures(): Promise<number> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const featuresService = services.find(
+        (service: any) => service.uuid.toLowerCase() === FEATURES_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!featuresService) {
+        return 0;
+      }
+
+      const characteristics = await featuresService.characteristics();
+      const featuresCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === FEATURES_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!featuresCharacteristic) {
+        return 0;
+      }
+
+      const value = await featuresCharacteristic.read();
+      const base64Value = value.value || '';
+      if (!base64Value) {
+        return 0;
+      }
+
+      const bytes = this.base64ToBytes(base64Value);
+      if (bytes.length < 4) {
+        return 0;
+      }
+
+      return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
+    } catch (error) {
+      console.error('Error getting features:', error);
+      return 0;
+    }
+  }
+
+  async setLedDimRatio(ratio: number): Promise<boolean> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const settingsService = services.find(
+        (service: any) => service.uuid.toLowerCase() === SETTINGS_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!settingsService) {
+        throw new Error('Settings service not found');
+      }
+
+      const characteristics = await settingsService.characteristics();
+      const dimCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === SETTINGS_DIM_RATIO_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!dimCharacteristic) {
+        throw new Error('LED dim ratio characteristic not found');
+      }
+
+      await dimCharacteristic.writeWithResponse(this.bytesToBase64(new Uint8Array([Math.max(0, Math.min(100, ratio))])));
+      return true;
+    } catch (error) {
+      console.error('Error setting LED dim ratio:', error);
+      return false;
+    }
+  }
+
+  async getLedDimRatio(): Promise<number | null> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const settingsService = services.find(
+        (service: any) => service.uuid.toLowerCase() === SETTINGS_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!settingsService) {
+        return null;
+      }
+
+      const characteristics = await settingsService.characteristics();
+      const dimCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === SETTINGS_DIM_RATIO_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!dimCharacteristic) {
+        return null;
+      }
+
+      const value = await dimCharacteristic.read();
+      const base64Value = value.value || '';
+      if (!base64Value) {
+        return null;
+      }
+
+      const bytes = this.base64ToBytes(base64Value);
+      return bytes.length > 0 ? (bytes[0] ?? null) : null;
+    } catch (error) {
+      console.error('Error getting LED dim ratio:', error);
+      return null;
+    }
+  }
+
+  async setMicGain(gain: number): Promise<boolean> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const settingsService = services.find(
+        (service: any) => service.uuid.toLowerCase() === SETTINGS_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!settingsService) {
+        throw new Error('Settings service not found');
+      }
+
+      const characteristics = await settingsService.characteristics();
+      const micCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === SETTINGS_MIC_GAIN_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!micCharacteristic) {
+        throw new Error('Mic gain characteristic not found');
+      }
+
+      await micCharacteristic.writeWithResponse(this.bytesToBase64(new Uint8Array([Math.max(0, Math.min(100, gain))])));
+      return true;
+    } catch (error) {
+      console.error('Error setting mic gain:', error);
+      return false;
+    }
+  }
+
+  async getMicGain(): Promise<number | null> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const settingsService = services.find(
+        (service: any) => service.uuid.toLowerCase() === SETTINGS_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!settingsService) {
+        return null;
+      }
+
+      const characteristics = await settingsService.characteristics();
+      const micCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === SETTINGS_MIC_GAIN_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!micCharacteristic) {
+        return null;
+      }
+
+      const value = await micCharacteristic.read();
+      const base64Value = value.value || '';
+      if (!base64Value) {
+        return null;
+      }
+
+      const bytes = this.base64ToBytes(base64Value);
+      return bytes.length > 0 ? (bytes[0] ?? null) : null;
+    } catch (error) {
+      console.error('Error getting mic gain:', error);
+      return null;
     }
   }
 
