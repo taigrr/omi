@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, ScrollView, Alert, Platform, Linking, TextInput } from 'react-native';
-import { OmiConnection, BleAudioCodec, OmiDevice, StorageFileInfo, StorageStatus } from '@omiai/omi-react-native';
+import { OmiConnection, BleAudioCodec, OmiDevice, StorageFileInfo, StorageStatus, DownloadedStorageFile } from '@omiai/omi-react-native';
 import { BleManager, State, Subscription } from 'react-native-ble-plx';
 
 export default function App() {
@@ -15,6 +15,7 @@ export default function App() {
   const [batteryLevel, setBatteryLevel] = useState<number>(-1);
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
   const [storageFiles, setStorageFiles] = useState<StorageFileInfo[]>([]);
+  const [downloadedStorageFile, setDownloadedStorageFile] = useState<DownloadedStorageFile | null>(null);
   const [buttonEvents, setButtonEvents] = useState<number[][]>([]);
   const [enableTranscription, setEnableTranscription] = useState<boolean>(false);
   const [deepgramApiKey, setDeepgramApiKey] = useState<string>('');
@@ -229,6 +230,7 @@ export default function App() {
       setBatteryLevel(-1);
       setStorageStatus(null);
       setStorageFiles([]);
+      setDownloadedStorageFile(null);
       setButtonEvents([]);
     } catch (error) {
       console.error('Disconnect error:', error);
@@ -532,6 +534,32 @@ export default function App() {
     }
   };
 
+  const downloadFirstStorageFile = async () => {
+    try {
+      if (!connected || !omiConnection.isConnected()) {
+        Alert.alert('Not Connected', 'Please connect to a device first');
+        return;
+      }
+
+      if (storageFiles.length === 0) {
+        Alert.alert('No Files', 'Load storage files first');
+        return;
+      }
+
+      const firstFile = storageFiles[0];
+      if (!firstFile) {
+        Alert.alert('No Files', 'Load storage files first');
+        return;
+      }
+
+      const downloaded = await omiConnection.downloadStorageFile(firstFile.index, firstFile.sizeBytes);
+      setDownloadedStorageFile(downloaded);
+    } catch (error) {
+      console.error('Download storage file error:', error);
+      Alert.alert('Error', `Failed to download storage file: ${error}`);
+    }
+  };
+
   const getBatteryLevel = async () => {
     try {
       if (!connected || !omiConnection.isConnected()) {
@@ -677,6 +705,17 @@ export default function App() {
               <Text style={styles.buttonText}>Load Storage Files</Text>
             </TouchableOpacity>
 
+            <TouchableOpacity
+              style={[
+                styles.button,
+                { marginTop: 15 }
+              ]}
+              onPress={downloadFirstStorageFile}
+              disabled={storageFiles.length === 0}
+            >
+              <Text style={styles.buttonText}>Download First Storage File</Text>
+            </TouchableOpacity>
+
             {batteryLevel >= 0 && (
               <View style={styles.batteryContainer}>
                 <Text style={styles.batteryTitle}>Battery Level:</Text>
@@ -702,6 +741,11 @@ export default function App() {
                     #{file.index}  ts={file.timestamp}  size={file.sizeBytes}
                   </Text>
                 ))}
+                {downloadedStorageFile && (
+                  <Text style={styles.storageFileText}>
+                    Downloaded file #{downloadedStorageFile.fileIndex}: {downloadedStorageFile.frameCount} frames, {downloadedStorageFile.rawBytesReceived} raw bytes, complete={String(downloadedStorageFile.complete)}
+                  </Text>
+                )}
               </View>
             )}
 

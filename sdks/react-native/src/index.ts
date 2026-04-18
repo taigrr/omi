@@ -16,7 +16,8 @@ export type {
   AudioDataEvent,
   ConnectionStateEvent,
   StorageStatus,
-  StorageFileInfo
+  StorageFileInfo,
+  DownloadedStorageFile
 } from './types';
 export { mapCodecToName } from './codecs';
 

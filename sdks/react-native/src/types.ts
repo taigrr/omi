@@ -52,6 +52,14 @@ export interface StorageFileInfo {
   sizeBytes: number;
 }
 
+export interface DownloadedStorageFile {
+  fileIndex: number;
+  rawBytesReceived: number;
+  frameCount: number;
+  frames: number[][];
+  complete: boolean;
+}
+
 /**
  * Options for audio processing
  */

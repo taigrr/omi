@@ -1,5 +1,5 @@
 import { BleManager, Device, Subscription } from 'react-native-ble-plx';
-import { DeviceConnectionState, OmiDevice, BleAudioCodec, StorageStatus, StorageFileInfo } from './types';
+import { DeviceConnectionState, OmiDevice, BleAudioCodec, StorageStatus, StorageFileInfo, DownloadedStorageFile } from './types';
 import { Platform } from 'react-native';
 
 // Service and characteristic UUIDs
@@ -14,6 +14,8 @@ const STORAGE_SERVICE_UUID = '19b10050-e8f2-537e-4f6c-d104768a1214';
 const STORAGE_CONTROL_CHARACTERISTIC_UUID = '19b10052-e8f2-537e-4f6c-d104768a1214';
 const STORAGE_DATA_STREAM_CHARACTERISTIC_UUID = '19b10051-e8f2-537e-4f6c-d104768a1214';
 const STORAGE_CMD_LIST_FILES = 0x10;
+const STORAGE_CMD_READ_FILE = 0x11;
+const STORAGE_STATUS_TRANSFER_END = 100;
 
 // Battery service UUIDs
 const BATTERY_SERVICE_UUID = '0000180f-0000-1000-8000-00805f9b34fb';
@@ -662,6 +664,162 @@ export class OmiConnection {
 
         const cmd = this.bytesToBase64(new Uint8Array([STORAGE_CMD_LIST_FILES]));
         storageControlCharacteristic.writeWithResponse(cmd).catch((writeError: any) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          cleanup();
+          reject(writeError);
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        cleanup();
+        reject(error);
+      }
+    });
+  }
+
+  async downloadStorageFile(
+    fileIndex: number,
+    expectedSizeBytes: number,
+    timeoutMs: number = 10000
+  ): Promise<DownloadedStorageFile> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    const services = await this.device.services();
+    const storageService = services.find(
+      (service: any) => service.uuid.toLowerCase() === STORAGE_SERVICE_UUID.toLowerCase()
+    );
+
+    if (!storageService) {
+      throw new Error('Storage service not found');
+    }
+
+    const characteristics = await storageService.characteristics();
+    const storageDataCharacteristic = characteristics.find(
+      (char: any) => char.uuid.toLowerCase() === STORAGE_DATA_STREAM_CHARACTERISTIC_UUID.toLowerCase()
+    );
+
+    if (!storageDataCharacteristic) {
+      throw new Error('Storage data characteristic not found');
+    }
+
+    return await new Promise<DownloadedStorageFile>((resolve, reject) => {
+      let settled = false;
+      let subscription: Subscription | null = null;
+      let rawBytesReceived = 0;
+      const frames: number[][] = [];
+
+      const cleanup = () => {
+        if (subscription) {
+          subscription.remove();
+          subscription = null;
+        }
+      };
+
+      const finish = (complete: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        cleanup();
+        resolve({
+          fileIndex,
+          rawBytesReceived,
+          frameCount: frames.length,
+          frames,
+          complete,
+        });
+      };
+
+      const timer = setTimeout(() => {
+        if (rawBytesReceived > 0 || frames.length > 0) {
+          finish(rawBytesReceived >= expectedSizeBytes);
+          return;
+        }
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error('Timed out waiting for storage file data'));
+      }, timeoutMs);
+
+      try {
+        subscription = storageDataCharacteristic.monitor((error: any, characteristic: any) => {
+          if (settled) return;
+
+          if (error) {
+            settled = true;
+            clearTimeout(timer);
+            cleanup();
+            reject(error);
+            return;
+          }
+
+          if (!characteristic?.value) {
+            return;
+          }
+
+          try {
+            const bytes = this.base64ToBytes(characteristic.value);
+            if (bytes.length === 0) {
+              return;
+            }
+
+            if (bytes.length === 1) {
+              const status = bytes[0] ?? 0;
+              if (status === STORAGE_STATUS_TRANSFER_END || status === 4 || status === 0) {
+                finish(rawBytesReceived >= expectedSizeBytes || status === STORAGE_STATUS_TRANSFER_END || status === 4);
+                return;
+              }
+
+              finish(rawBytesReceived >= expectedSizeBytes);
+              return;
+            }
+
+            if (bytes.length > 4) {
+              const audioData = bytes.slice(4);
+              rawBytesReceived += audioData.length;
+
+              let packageOffset = 0;
+              while (packageOffset < audioData.length - 1) {
+                const frameSize = audioData[packageOffset] ?? 0;
+                if (frameSize === 0) {
+                  packageOffset += 1;
+                  continue;
+                }
+
+                if (packageOffset + 1 + frameSize > audioData.length) {
+                  break;
+                }
+
+                const frame = Array.from(audioData.slice(packageOffset + 1, packageOffset + 1 + frameSize));
+                frames.push(frame);
+                packageOffset += frameSize + 1;
+              }
+            }
+
+            if (expectedSizeBytes > 0 && rawBytesReceived >= expectedSizeBytes) {
+              finish(true);
+            }
+          } catch (decodeError) {
+            settled = true;
+            clearTimeout(timer);
+            cleanup();
+            reject(decodeError);
+          }
+        });
+
+        const command = new Uint8Array([
+          STORAGE_CMD_READ_FILE,
+          fileIndex & 0xff,
+          0,
+          0,
+          0,
+          0,
+        ]);
+
+        const cmd = this.bytesToBase64(command);
+        storageDataCharacteristic.writeWithResponse(cmd).catch((writeError: any) => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
