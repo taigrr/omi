@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/taigrr/omi/AG/internal/config"
-	"github.com/taigrr/omi/AG/internal/store"
-	"github.com/taigrr/omi/AG/internal/types"
+	"github.com/taigrr/omi/selfhost/internal/config"
+	"github.com/taigrr/omi/selfhost/internal/store"
+	"github.com/taigrr/omi/selfhost/internal/types"
 )
 
 type Server struct {

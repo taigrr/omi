@@ -5,9 +5,9 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/taigrr/omi/AG/internal/config"
-	"github.com/taigrr/omi/AG/internal/httpapi"
-	"github.com/taigrr/omi/AG/internal/store"
+	"github.com/taigrr/omi/selfhost/internal/config"
+	"github.com/taigrr/omi/selfhost/internal/httpapi"
+	"github.com/taigrr/omi/selfhost/internal/store"
 )
 
 func main() {
@@ -18,6 +18,6 @@ func main() {
 	}
 
 	srv := httpapi.New(cfg, st)
-	fmt.Printf("AG backend listening on %s\n", cfg.Addr)
+	fmt.Printf("selfhost backend listening on %s\n", cfg.Addr)
 	log.Fatal(http.ListenAndServe(cfg.Addr, srv.Handler()))
 }

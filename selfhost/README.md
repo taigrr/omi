@@ -1,4 +1,4 @@
-# AG self-hosted backend
+# selfhost backend
 
 Pendant-first self-hosted backend for Omi experiments.
 
@@ -13,14 +13,14 @@ This is intentionally narrow and Go-based.
 ## Run
 
 ```bash
-cd AG
+cd selfhost
 go run ./cmd/server
 ```
 
 Environment variables:
-- `AG_ADDR` listen address, default `:8080`
-- `AG_DATA_DIR` upload storage directory, default `./data`
-- `AG_PUBLIC_URL` public base URL with trailing slash, default `http://127.0.0.1:8080/`
+- `SELFHOST_ADDR` listen address, default `:8080`
+- `SELFHOST_DATA_DIR` upload storage directory, default `./data`
+- `SELFHOST_PUBLIC_URL` public base URL with trailing slash, default `http://127.0.0.1:8080/`
 
 ## Endpoints
 
