@@ -9,12 +9,14 @@
   },
   "dependencies": {
     "@omiai/omi-react-native": "file:..",
+    "@react-native-async-storage/async-storage": "^3.0.2",
     "expo": "^50.0.0",
     "expo-status-bar": "~1.11.0",
     "install": "^0.13.0",
     "react": "18.2.0",
     "react-native": "0.73.2",
-    "react-native-ble-plx": "^3.1.2"
+    "react-native-ble-plx": "^3.1.2",
+    "react-native-document-picker": "^9.3.1"
   },
   "devDependencies": {
     "@babel/core": "^7.20.0",

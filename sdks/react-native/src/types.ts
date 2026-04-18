@@ -41,6 +41,25 @@ export interface OmiNativeModule {
   stopScan(): Promise<void>;
 }
 
+export interface StorageStatus {
+  totalUsedBytes: number;
+  fileCount: number;
+}
+
+export interface StorageFileInfo {
+  index: number;
+  timestamp: number;
+  sizeBytes: number;
+}
+
+export interface DownloadedStorageFile {
+  fileIndex: number;
+  rawBytesReceived: number;
+  frameCount: number;
+  frames: number[][];
+  complete: boolean;
+}
+
 /**
  * Options for audio processing
  */

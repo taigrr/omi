@@ -1,11 +1,30 @@
 import { BleManager, Device, Subscription } from 'react-native-ble-plx';
-import { DeviceConnectionState, OmiDevice, BleAudioCodec } from './types';
+import { DeviceConnectionState, OmiDevice, BleAudioCodec, StorageStatus, StorageFileInfo, DownloadedStorageFile } from './types';
 import { Platform } from 'react-native';
 
 // Service and characteristic UUIDs
 const OMI_SERVICE_UUID = '19b10000-e8f2-537e-4f6c-d104768a1214';
 const AUDIO_CODEC_CHARACTERISTIC_UUID = '19b10002-e8f2-537e-4f6c-d104768a1214';
 const AUDIO_DATA_STREAM_CHARACTERISTIC_UUID = '19b10001-e8f2-537e-4f6c-d104768a1214';
+const BUTTON_SERVICE_UUID = '23ba7924-0000-1000-7450-346eac492e92';
+const BUTTON_TRIGGER_CHARACTERISTIC_UUID = '23ba7925-0000-1000-7450-346eac492e92';
+const TIME_SYNC_SERVICE_UUID = '19b10030-e8f2-537e-4f6c-d104768a1214';
+const TIME_SYNC_WRITE_CHARACTERISTIC_UUID = '19b10031-e8f2-537e-4f6c-d104768a1214';
+const STORAGE_SERVICE_UUID = '19b10050-e8f2-537e-4f6c-d104768a1214';
+const STORAGE_CONTROL_CHARACTERISTIC_UUID = '19b10052-e8f2-537e-4f6c-d104768a1214';
+const STORAGE_DATA_STREAM_CHARACTERISTIC_UUID = '19b10051-e8f2-537e-4f6c-d104768a1214';
+const STORAGE_CMD_LIST_FILES = 0x10;
+const STORAGE_CMD_READ_FILE = 0x11;
+const STORAGE_CMD_DELETE_FILE = 0x12;
+const STORAGE_CMD_STOP_SYNC = 0x03;
+const STORAGE_STATUS_TRANSFER_END = 100;
+const SETTINGS_SERVICE_UUID = '19b10010-e8f2-537e-4f6c-d104768a1214';
+const SETTINGS_DIM_RATIO_CHARACTERISTIC_UUID = '19b10011-e8f2-537e-4f6c-d104768a1214';
+const SETTINGS_MIC_GAIN_CHARACTERISTIC_UUID = '19b10012-e8f2-537e-4f6c-d104768a1214';
+const FEATURES_SERVICE_UUID = '19b10020-e8f2-537e-4f6c-d104768a1214';
+const FEATURES_CHARACTERISTIC_UUID = '19b10021-e8f2-537e-4f6c-d104768a1214';
+const SPEAKER_SERVICE_UUID = '19b10070-e8f2-537e-4f6c-d104768a1214';
+const SPEAKER_CHARACTERISTIC_UUID = '19b10071-e8f2-537e-4f6c-d104768a1214';
 
 // Battery service UUIDs
 const BATTERY_SERVICE_UUID = '0000180f-0000-1000-8000-00805f9b34fb';
@@ -370,6 +389,792 @@ export class OmiConnection {
   async stopAudioBytesListener(subscription: Subscription): Promise<void> {
     if (subscription) {
       subscription.remove();
+    }
+  }
+
+  /**
+   * Start listening for button trigger events.
+   */
+  async startButtonListener(
+    onButtonEvent: (bytes: number[]) => void
+  ): Promise<Subscription | null> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const buttonService = services.find(
+        (service: any) => service.uuid.toLowerCase() === BUTTON_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!buttonService) {
+        console.error('Button service not found');
+        return null;
+      }
+
+      const characteristics = await buttonService.characteristics();
+      const buttonCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === BUTTON_TRIGGER_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!buttonCharacteristic) {
+        console.error('Button trigger characteristic not found');
+        return null;
+      }
+
+      return buttonCharacteristic.monitor((error: any, characteristic: any) => {
+        if (error) {
+          console.error('Button trigger notification error:', error);
+          return;
+        }
+
+        if (characteristic?.value) {
+          try {
+            const bytes = this.base64ToBytes(characteristic.value);
+            onButtonEvent(Array.from(bytes));
+          } catch (decodeError) {
+            console.error('Error decoding button event:', decodeError);
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error starting button listener:', error);
+      return null;
+    }
+  }
+
+  async stopButtonListener(subscription: Subscription): Promise<void> {
+    if (subscription) {
+      subscription.remove();
+    }
+  }
+
+  /**
+   * Sync current unix epoch seconds to the device.
+   */
+  async syncTime(epochSeconds?: number): Promise<void> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    const services = await this.device.services();
+    const timeSyncService = services.find(
+      (service: any) => service.uuid.toLowerCase() === TIME_SYNC_SERVICE_UUID.toLowerCase()
+    );
+
+    if (!timeSyncService) {
+      throw new Error('Time sync service not found');
+    }
+
+    const characteristics = await timeSyncService.characteristics();
+    const timeSyncCharacteristic = characteristics.find(
+      (char: any) => char.uuid.toLowerCase() === TIME_SYNC_WRITE_CHARACTERISTIC_UUID.toLowerCase()
+    );
+
+    if (!timeSyncCharacteristic) {
+      throw new Error('Time sync characteristic not found');
+    }
+
+    const value = epochSeconds ?? Math.floor(Date.now() / 1000);
+    const bytes = new Uint8Array([
+      value & 0xff,
+      (value >> 8) & 0xff,
+      (value >> 16) & 0xff,
+      (value >> 24) & 0xff,
+    ]);
+
+    const base64Value = this.bytesToBase64(bytes);
+    await timeSyncCharacteristic.writeWithResponse(base64Value);
+  }
+
+  private bytesToBase64(bytes: Uint8Array): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let result = '';
+    let i = 0;
+
+    while (i < bytes.length) {
+      const byte1 = bytes[i++] ?? 0;
+      const byte2 = i < bytes.length ? bytes[i++] ?? 0 : NaN;
+      const byte3 = i < bytes.length ? bytes[i++] ?? 0 : NaN;
+
+      const enc1 = byte1 >> 2;
+      const enc2 = ((byte1 & 3) << 4) | ((byte2 || 0) >> 4);
+      const enc3 = Number.isNaN(byte2) ? 64 : (((byte2 as number) & 15) << 2) | ((byte3 || 0) >> 6);
+      const enc4 = Number.isNaN(byte3) ? 64 : ((byte3 as number) & 63);
+
+      result += chars.charAt(enc1);
+      result += chars.charAt(enc2);
+      result += enc3 === 64 ? '=' : chars.charAt(enc3);
+      result += enc4 === 64 ? '=' : chars.charAt(enc4);
+    }
+
+    return result;
+  }
+
+  async getStorageStatus(): Promise<StorageStatus | null> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const storageService = services.find(
+        (service: any) => service.uuid.toLowerCase() === STORAGE_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!storageService) {
+        return null;
+      }
+
+      const characteristics = await storageService.characteristics();
+      const storageControlCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === STORAGE_CONTROL_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!storageControlCharacteristic) {
+        return null;
+      }
+
+      const storageValue = await storageControlCharacteristic.read();
+      const base64Value = storageValue.value || '';
+      if (!base64Value) {
+        return null;
+      }
+
+      const bytes = this.base64ToBytes(base64Value);
+      if (bytes.length < 8) {
+        return null;
+      }
+
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const totalUsedBytes = view.getUint32(0, true);
+      const field1 = view.getUint32(4, true);
+
+      if (field1 > 1000) {
+        return null;
+      }
+
+      return {
+        totalUsedBytes,
+        fileCount: field1,
+      };
+    } catch (error) {
+      console.error('Error getting storage status:', error);
+      return null;
+    }
+  }
+
+  async listStorageFiles(timeoutMs: number = 5000): Promise<StorageFileInfo[]> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    const services = await this.device.services();
+    const storageService = services.find(
+      (service: any) => service.uuid.toLowerCase() === STORAGE_SERVICE_UUID.toLowerCase()
+    );
+
+    if (!storageService) {
+      throw new Error('Storage service not found');
+    }
+
+    const characteristics = await storageService.characteristics();
+    const storageControlCharacteristic = characteristics.find(
+      (char: any) => char.uuid.toLowerCase() === STORAGE_CONTROL_CHARACTERISTIC_UUID.toLowerCase()
+    );
+    const storageDataCharacteristic = characteristics.find(
+      (char: any) => char.uuid.toLowerCase() === STORAGE_DATA_STREAM_CHARACTERISTIC_UUID.toLowerCase()
+    );
+
+    if (!storageControlCharacteristic) {
+      throw new Error('Storage control characteristic not found');
+    }
+
+    if (!storageDataCharacteristic) {
+      throw new Error('Storage data characteristic not found');
+    }
+
+    return await new Promise<StorageFileInfo[]>((resolve, reject) => {
+      let settled = false;
+      let subscription: Subscription | null = null;
+
+      const cleanup = () => {
+        if (subscription) {
+          subscription.remove();
+          subscription = null;
+        }
+      };
+
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error('Timed out waiting for storage file list'));
+      }, timeoutMs);
+
+      try {
+        subscription = storageDataCharacteristic.monitor((error: any, characteristic: any) => {
+          if (settled) return;
+
+          if (error) {
+            settled = true;
+            clearTimeout(timer);
+            cleanup();
+            reject(error);
+            return;
+          }
+
+          if (!characteristic?.value) {
+            return;
+          }
+
+          try {
+            const bytes = this.base64ToBytes(characteristic.value);
+            if (bytes.length < 1) {
+              return;
+            }
+
+            const count = bytes[0] ?? 0;
+            const expectedLength = 1 + count * 8;
+            if (bytes.length < expectedLength) {
+              return;
+            }
+
+            const files: StorageFileInfo[] = [];
+            let offset = 1;
+            for (let index = 0; index < count; index++) {
+              const timestamp =
+                ((bytes[offset] ?? 0) << 24) |
+                ((bytes[offset + 1] ?? 0) << 16) |
+                ((bytes[offset + 2] ?? 0) << 8) |
+                (bytes[offset + 3] ?? 0);
+              const sizeBytes =
+                ((bytes[offset + 4] ?? 0) << 24) |
+                ((bytes[offset + 5] ?? 0) << 16) |
+                ((bytes[offset + 6] ?? 0) << 8) |
+                (bytes[offset + 7] ?? 0);
+
+              files.push({ index, timestamp: timestamp >>> 0, sizeBytes: sizeBytes >>> 0 });
+              offset += 8;
+            }
+
+            settled = true;
+            clearTimeout(timer);
+            cleanup();
+            resolve(files);
+          } catch (decodeError) {
+            settled = true;
+            clearTimeout(timer);
+            cleanup();
+            reject(decodeError);
+          }
+        });
+
+        const cmd = this.bytesToBase64(new Uint8Array([STORAGE_CMD_LIST_FILES]));
+        storageControlCharacteristic.writeWithResponse(cmd).catch((writeError: any) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          cleanup();
+          reject(writeError);
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        cleanup();
+        reject(error);
+      }
+    });
+  }
+
+  async downloadStorageFile(
+    fileIndex: number,
+    expectedSizeBytes: number,
+    timeoutMs: number = 10000
+  ): Promise<DownloadedStorageFile> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    const services = await this.device.services();
+    const storageService = services.find(
+      (service: any) => service.uuid.toLowerCase() === STORAGE_SERVICE_UUID.toLowerCase()
+    );
+
+    if (!storageService) {
+      throw new Error('Storage service not found');
+    }
+
+    const characteristics = await storageService.characteristics();
+    const storageDataCharacteristic = characteristics.find(
+      (char: any) => char.uuid.toLowerCase() === STORAGE_DATA_STREAM_CHARACTERISTIC_UUID.toLowerCase()
+    );
+
+    if (!storageDataCharacteristic) {
+      throw new Error('Storage data characteristic not found');
+    }
+
+    return await new Promise<DownloadedStorageFile>((resolve, reject) => {
+      let settled = false;
+      let subscription: Subscription | null = null;
+      let rawBytesReceived = 0;
+      const frames: number[][] = [];
+
+      const cleanup = () => {
+        if (subscription) {
+          subscription.remove();
+          subscription = null;
+        }
+      };
+
+      const finish = (complete: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        cleanup();
+        resolve({
+          fileIndex,
+          rawBytesReceived,
+          frameCount: frames.length,
+          frames,
+          complete,
+        });
+      };
+
+      const timer = setTimeout(() => {
+        if (rawBytesReceived > 0 || frames.length > 0) {
+          finish(rawBytesReceived >= expectedSizeBytes);
+          return;
+        }
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error('Timed out waiting for storage file data'));
+      }, timeoutMs);
+
+      try {
+        subscription = storageDataCharacteristic.monitor((error: any, characteristic: any) => {
+          if (settled) return;
+
+          if (error) {
+            settled = true;
+            clearTimeout(timer);
+            cleanup();
+            reject(error);
+            return;
+          }
+
+          if (!characteristic?.value) {
+            return;
+          }
+
+          try {
+            const bytes = this.base64ToBytes(characteristic.value);
+            if (bytes.length === 0) {
+              return;
+            }
+
+            if (bytes.length === 1) {
+              const status = bytes[0] ?? 0;
+              if (status === STORAGE_STATUS_TRANSFER_END || status === 4 || status === 0) {
+                finish(rawBytesReceived >= expectedSizeBytes || status === STORAGE_STATUS_TRANSFER_END || status === 4);
+                return;
+              }
+
+              finish(rawBytesReceived >= expectedSizeBytes);
+              return;
+            }
+
+            if (bytes.length > 4) {
+              const audioData = bytes.slice(4);
+              rawBytesReceived += audioData.length;
+
+              let packageOffset = 0;
+              while (packageOffset < audioData.length - 1) {
+                const frameSize = audioData[packageOffset] ?? 0;
+                if (frameSize === 0) {
+                  packageOffset += 1;
+                  continue;
+                }
+
+                if (packageOffset + 1 + frameSize > audioData.length) {
+                  break;
+                }
+
+                const frame = Array.from(audioData.slice(packageOffset + 1, packageOffset + 1 + frameSize));
+                frames.push(frame);
+                packageOffset += frameSize + 1;
+              }
+            }
+
+            if (expectedSizeBytes > 0 && rawBytesReceived >= expectedSizeBytes) {
+              finish(true);
+            }
+          } catch (decodeError) {
+            settled = true;
+            clearTimeout(timer);
+            cleanup();
+            reject(decodeError);
+          }
+        });
+
+        const command = new Uint8Array([
+          STORAGE_CMD_READ_FILE,
+          fileIndex & 0xff,
+          0,
+          0,
+          0,
+          0,
+        ]);
+
+        const cmd = this.bytesToBase64(command);
+        storageDataCharacteristic.writeWithResponse(cmd).catch((writeError: any) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          cleanup();
+          reject(writeError);
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        cleanup();
+        reject(error);
+      }
+    });
+  }
+
+  async deleteStorageFile(fileIndex: number, timeoutMs: number = 5000): Promise<boolean> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    const services = await this.device.services();
+    const storageService = services.find(
+      (service: any) => service.uuid.toLowerCase() === STORAGE_SERVICE_UUID.toLowerCase()
+    );
+
+    if (!storageService) {
+      throw new Error('Storage service not found');
+    }
+
+    const characteristics = await storageService.characteristics();
+    const storageDataCharacteristic = characteristics.find(
+      (char: any) => char.uuid.toLowerCase() === STORAGE_DATA_STREAM_CHARACTERISTIC_UUID.toLowerCase()
+    );
+
+    if (!storageDataCharacteristic) {
+      throw new Error('Storage data characteristic not found');
+    }
+
+    return await new Promise<boolean>((resolve, reject) => {
+      let settled = false;
+      let subscription: Subscription | null = null;
+
+      const cleanup = () => {
+        if (subscription) {
+          subscription.remove();
+          subscription = null;
+        }
+      };
+
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(false);
+      }, timeoutMs);
+
+      try {
+        subscription = storageDataCharacteristic.monitor((error: any, characteristic: any) => {
+          if (settled) return;
+
+          if (error) {
+            settled = true;
+            clearTimeout(timer);
+            cleanup();
+            reject(error);
+            return;
+          }
+
+          if (!characteristic?.value) {
+            return;
+          }
+
+          const bytes = this.base64ToBytes(characteristic.value);
+          if (bytes.length < 1) {
+            return;
+          }
+
+          settled = true;
+          clearTimeout(timer);
+          cleanup();
+          resolve((bytes[0] ?? 0xff) === 0);
+        });
+
+        const command = this.bytesToBase64(new Uint8Array([
+          STORAGE_CMD_DELETE_FILE,
+          fileIndex & 0xff,
+        ]));
+
+        storageDataCharacteristic.writeWithResponse(command).catch((writeError: any) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          cleanup();
+          reject(writeError);
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        cleanup();
+        reject(error);
+      }
+    });
+  }
+
+  async stopStorageSync(): Promise<boolean> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const storageService = services.find(
+        (service: any) => service.uuid.toLowerCase() === STORAGE_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!storageService) {
+        throw new Error('Storage service not found');
+      }
+
+      const characteristics = await storageService.characteristics();
+      const storageDataCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === STORAGE_DATA_STREAM_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!storageDataCharacteristic) {
+        throw new Error('Storage data characteristic not found');
+      }
+
+      const command = this.bytesToBase64(new Uint8Array([STORAGE_CMD_STOP_SYNC]));
+      await storageDataCharacteristic.writeWithResponse(command);
+      return true;
+    } catch (error) {
+      console.error('Error stopping storage sync:', error);
+      return false;
+    }
+  }
+
+  async playHaptic(level: number): Promise<boolean> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const speakerService = services.find(
+        (service: any) => service.uuid.toLowerCase() === SPEAKER_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!speakerService) {
+        throw new Error('Speaker service not found');
+      }
+
+      const characteristics = await speakerService.characteristics();
+      const speakerCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === SPEAKER_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!speakerCharacteristic) {
+        throw new Error('Speaker characteristic not found');
+      }
+
+      await speakerCharacteristic.writeWithResponse(this.bytesToBase64(new Uint8Array([level & 0xff])));
+      return true;
+    } catch (error) {
+      console.error('Error playing haptic:', error);
+      return false;
+    }
+  }
+
+  async getFeatures(): Promise<number> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const featuresService = services.find(
+        (service: any) => service.uuid.toLowerCase() === FEATURES_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!featuresService) {
+        return 0;
+      }
+
+      const characteristics = await featuresService.characteristics();
+      const featuresCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === FEATURES_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!featuresCharacteristic) {
+        return 0;
+      }
+
+      const value = await featuresCharacteristic.read();
+      const base64Value = value.value || '';
+      if (!base64Value) {
+        return 0;
+      }
+
+      const bytes = this.base64ToBytes(base64Value);
+      if (bytes.length < 4) {
+        return 0;
+      }
+
+      return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
+    } catch (error) {
+      console.error('Error getting features:', error);
+      return 0;
+    }
+  }
+
+  async setLedDimRatio(ratio: number): Promise<boolean> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const settingsService = services.find(
+        (service: any) => service.uuid.toLowerCase() === SETTINGS_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!settingsService) {
+        throw new Error('Settings service not found');
+      }
+
+      const characteristics = await settingsService.characteristics();
+      const dimCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === SETTINGS_DIM_RATIO_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!dimCharacteristic) {
+        throw new Error('LED dim ratio characteristic not found');
+      }
+
+      await dimCharacteristic.writeWithResponse(this.bytesToBase64(new Uint8Array([Math.max(0, Math.min(100, ratio))])));
+      return true;
+    } catch (error) {
+      console.error('Error setting LED dim ratio:', error);
+      return false;
+    }
+  }
+
+  async getLedDimRatio(): Promise<number | null> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const settingsService = services.find(
+        (service: any) => service.uuid.toLowerCase() === SETTINGS_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!settingsService) {
+        return null;
+      }
+
+      const characteristics = await settingsService.characteristics();
+      const dimCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === SETTINGS_DIM_RATIO_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!dimCharacteristic) {
+        return null;
+      }
+
+      const value = await dimCharacteristic.read();
+      const base64Value = value.value || '';
+      if (!base64Value) {
+        return null;
+      }
+
+      const bytes = this.base64ToBytes(base64Value);
+      return bytes.length > 0 ? (bytes[0] ?? null) : null;
+    } catch (error) {
+      console.error('Error getting LED dim ratio:', error);
+      return null;
+    }
+  }
+
+  async setMicGain(gain: number): Promise<boolean> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const settingsService = services.find(
+        (service: any) => service.uuid.toLowerCase() === SETTINGS_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!settingsService) {
+        throw new Error('Settings service not found');
+      }
+
+      const characteristics = await settingsService.characteristics();
+      const micCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === SETTINGS_MIC_GAIN_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!micCharacteristic) {
+        throw new Error('Mic gain characteristic not found');
+      }
+
+      await micCharacteristic.writeWithResponse(this.bytesToBase64(new Uint8Array([Math.max(0, Math.min(100, gain))])));
+      return true;
+    } catch (error) {
+      console.error('Error setting mic gain:', error);
+      return false;
+    }
+  }
+
+  async getMicGain(): Promise<number | null> {
+    if (!this.device) {
+      throw new Error('Device not connected');
+    }
+
+    try {
+      const services = await this.device.services();
+      const settingsService = services.find(
+        (service: any) => service.uuid.toLowerCase() === SETTINGS_SERVICE_UUID.toLowerCase()
+      );
+
+      if (!settingsService) {
+        return null;
+      }
+
+      const characteristics = await settingsService.characteristics();
+      const micCharacteristic = characteristics.find(
+        (char: any) => char.uuid.toLowerCase() === SETTINGS_MIC_GAIN_CHARACTERISTIC_UUID.toLowerCase()
+      );
+
+      if (!micCharacteristic) {
+        return null;
+      }
+
+      const value = await micCharacteristic.read();
+      const base64Value = value.value || '';
+      if (!base64Value) {
+        return null;
+      }
+
+      const bytes = this.base64ToBytes(base64Value);
+      return bytes.length > 0 ? (bytes[0] ?? null) : null;
+    } catch (error) {
+      console.error('Error getting mic gain:', error);
+      return null;
     }
   }
 

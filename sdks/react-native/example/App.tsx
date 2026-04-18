@@ -1,1032 +1,619 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, ScrollView, Alert, Platform, Linking, TextInput } from 'react-native';
-import { OmiConnection, BleAudioCodec, OmiDevice } from '@omiai/omi-react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import DocumentPicker from 'react-native-document-picker';
+import {
+  Alert,
+  Linking,
+  Platform,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { BleManager, State, Subscription } from 'react-native-ble-plx';
+import {
+  BleAudioCodec,
+  OmiConnection,
+  OmiDevice,
+  StorageFileInfo,
+  StorageStatus,
+} from '@omiai/omi-react-native';
+
+const THEME = {
+  bg: '#0f172a',
+  panel: '#111827',
+  panelAlt: '#1f2937',
+  text: '#f8fafc',
+  subtext: '#94a3b8',
+  accent: '#38bdf8',
+  success: '#22c55e',
+  warn: '#f59e0b',
+  danger: '#ef4444',
+};
 
 export default function App() {
-  const [devices, setDevices] = useState<OmiDevice[]>([]);
-  const [scanning, setScanning] = useState(false);
-  const [connected, setConnected] = useState(false);
-  const [codec, setCodec] = useState<BleAudioCodec | null>(null);
-  const [bluetoothState, setBluetoothState] = useState<State>(State.Unknown);
-  const [permissionGranted, setPermissionGranted] = useState<boolean>(false);
-  const [isListeningAudio, setIsListeningAudio] = useState<boolean>(false);
-  const [audioPacketsReceived, setAudioPacketsReceived] = useState<number>(0);
-  const [batteryLevel, setBatteryLevel] = useState<number>(-1);
-  const [enableTranscription, setEnableTranscription] = useState<boolean>(false);
-  const [deepgramApiKey, setDeepgramApiKey] = useState<string>('');
-  const [transcription, setTranscription] = useState<string>('');
-
-  // Transcription processing state
-  const websocketRef = useRef<WebSocket | null>(null);
-  const isTranscribing = useRef<boolean>(false);
-  const audioBufferRef = useRef<Uint8Array[]>([]);
-  const processingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  const omiConnection = useRef(new OmiConnection()).current;
-  const stopScanRef = useRef<(() => void) | null>(null);
+  const omi = useRef(new OmiConnection()).current;
   const bleManagerRef = useRef<BleManager | null>(null);
-  const audioSubscriptionRef = useRef<Subscription | null>(null);
+  const stopScanRef = useRef<(() => void) | null>(null);
+  const buttonSubRef = useRef<Subscription | null>(null);
+
+  const [bluetoothState, setBluetoothState] = useState<State>(State.Unknown);
+  const [permissionGranted, setPermissionGranted] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [devices, setDevices] = useState<OmiDevice[]>([]);
+  const [connectedDevice, setConnectedDevice] = useState<OmiDevice | null>(null);
+  const [codec, setCodec] = useState<BleAudioCodec | null>(null);
+  const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
+  const [buttonEvents, setButtonEvents] = useState<number[][]>([]);
+  const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
+  const [storageFiles, setStorageFiles] = useState<StorageFileInfo[]>([]);
+  const [featuresValue, setFeaturesValue] = useState<number>(0);
+  const [ledDimRatio, setLedDimRatio] = useState<number | null>(null);
+  const [micGain, setMicGain] = useState<number | null>(null);
+  const [statusMessage, setStatusMessage] = useState('Ready to scan');
+  const [apiBaseUrl, setApiBaseUrl] = useState('http://127.0.0.1:8080/');
+  const [agentWsUrl, setAgentWsUrl] = useState('ws://127.0.0.1:8080/v1/agent/ws');
+  const [backendHealth, setBackendHealth] = useState('unknown');
+  const [uploadResult, setUploadResult] = useState('none');
 
   useEffect(() => {
-    // Initialize BLE Manager
+    const loadConfig = async () => {
+      try {
+        const [savedApiBaseUrl, savedAgentWsUrl] = await Promise.all([
+          AsyncStorage.getItem('omi.selfHosted.apiBaseUrl'),
+          AsyncStorage.getItem('omi.selfHosted.agentWsUrl'),
+        ]);
+        if (savedApiBaseUrl) setApiBaseUrl(savedApiBaseUrl);
+        if (savedAgentWsUrl) setAgentWsUrl(savedAgentWsUrl);
+      } catch (error) {
+        setStatusMessage(`Failed to load self-host config: ${String(error)}`);
+      }
+    };
+
+    loadConfig();
+  }, []);
+
+  useEffect(() => {
     const manager = new BleManager();
     bleManagerRef.current = manager;
 
-    // Subscribe to state changes
-    const subscription = manager.onStateChange((state) => {
-      console.log('Bluetooth state:', state);
+    const sub = manager.onStateChange((state) => {
       setBluetoothState(state);
-
       if (state === State.PoweredOn) {
-        // Bluetooth is on, now we can request permission
         requestBluetoothPermission();
       }
-    }, true); // true to check the initial state
+    }, true);
 
     return () => {
-      // Clean up subscription and manager when component unmounts
-      subscription.remove();
-      if (bleManagerRef.current) {
-        bleManagerRef.current.destroy();
-      }
+      sub.remove();
+      buttonSubRef.current?.remove();
+      stopScanRef.current?.();
+      manager.destroy();
     };
   }, []);
 
   const requestBluetoothPermission = async () => {
     try {
-      if (Platform.OS === 'ios') {
-        bleManagerRef.current?.startDeviceScan(null, null, (error) => {
-          if (error) {
-            console.error('Permission error:', error);
-            setPermissionGranted(false);
-            Alert.alert(
-              'Bluetooth Permission',
-              'Please enable Bluetooth permission in your device settings to use this feature.',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Open Settings', onPress: () => Linking.openSettings() }
-              ]
-            );
-          } else {
-            setPermissionGranted(true);
-          }
-          // Stop scanning immediately after permission check
-          bleManagerRef.current?.stopDeviceScan();
-        });
-      } else if (Platform.OS === 'android') {
-        // On Android, we need to check for location and bluetooth permissions
-        try {
-          // This will trigger the permission dialog
-          await bleManagerRef.current?.startDeviceScan(null, null, (error) => {
-            if (error) {
-              console.error('Permission error:', error);
-              setPermissionGranted(false);
-              Alert.alert(
-                'Bluetooth Permission',
-                'Please enable Bluetooth and Location permissions in your device settings to use this feature.',
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  { text: 'Open Settings', onPress: () => Linking.openSettings() }
-                ]
-              );
-            } else {
-              setPermissionGranted(true);
-            }
-            // Stop scanning immediately after permission check
-            bleManagerRef.current?.stopDeviceScan();
-          });
-        } catch (error) {
-          console.error('Error requesting permissions:', error);
+      bleManagerRef.current?.startDeviceScan(null, null, (error) => {
+        if (error) {
           setPermissionGranted(false);
+          return;
         }
-      }
-    } catch (error) {
-      console.error('Error in requestBluetoothPermission:', error);
+        setPermissionGranted(true);
+        bleManagerRef.current?.stopDeviceScan();
+      });
+    } catch {
       setPermissionGranted(false);
     }
   };
 
+  const resetDeviceState = () => {
+    setCodec(null);
+    setBatteryLevel(null);
+    setButtonEvents([]);
+    setStorageStatus(null);
+    setStorageFiles([]);
+    setFeaturesValue(0);
+    setLedDimRatio(null);
+    setMicGain(null);
+  };
 
-  const startScan = () => {
-    // Check if Bluetooth is on and permission is granted
+  const statusTone = useMemo(() => {
+    if (!connectedDevice) return THEME.subtext;
+    return THEME.success;
+  }, [connectedDevice]);
+
+  const scan = () => {
     if (bluetoothState !== State.PoweredOn) {
-      Alert.alert(
-        'Bluetooth is Off',
-        'Please turn on Bluetooth to scan for devices.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Open Settings', onPress: () => Linking.openSettings() }
-        ]
-      );
+      Alert.alert('Bluetooth Off', 'Please enable Bluetooth first.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Open Settings', onPress: () => Linking.openSettings() },
+      ]);
       return;
     }
 
     if (!permissionGranted) {
       requestBluetoothPermission();
+      setStatusMessage('Waiting for Bluetooth permission');
       return;
     }
 
-    // Don't clear devices list, just start scanning
+    setDevices([]);
     setScanning(true);
+    setStatusMessage('Scanning for Omi devices');
+    stopScanRef.current?.();
+    stopScanRef.current = omi.scanForDevices((device) => {
+      setDevices((prev) => (prev.some((d) => d.id === device.id) ? prev : [...prev, device]));
+    }, 15000);
 
-    stopScanRef.current = omiConnection.scanForDevices(
-      (device) => {
-        setDevices((prev) => {
-          // Check if device already exists
-          if (prev.some((d) => d.id === device.id)) {
-            return prev;
-          }
-          return [...prev, device];
-        });
-      },
-      30000 // 30 seconds timeout
-    );
-
-    // Auto-stop after 30 seconds
     setTimeout(() => {
-      stopScan();
-    }, 30000);
+      stopScanRef.current?.();
+      setScanning(false);
+      setStatusMessage('Scan finished');
+    }, 15000);
   };
 
-  const stopScan = () => {
-    if (stopScanRef.current) {
-      stopScanRef.current();
-      stopScanRef.current = null;
-    }
-    setScanning(false);
-  };
-
-  const connectToDevice = async (deviceId: string) => {
+  const connectToDevice = async (device: OmiDevice) => {
     try {
-      // First check if we're already connected to a device
-      if (connected) {
-        // Disconnect from the current device first
-        await disconnectFromDevice();
+      if (connectedDevice) {
+        await disconnect();
       }
 
-      // Set connecting state
-      setConnected(false);
-
-      const success = await omiConnection.connect(deviceId, (id, state) => {
-        console.log(`Device ${id} connection state: ${state}`);
-        const isConnected = state === 'connected';
-        setConnected(isConnected);
-
-        if (!isConnected) {
-          setCodec(null);
+      setStatusMessage(`Connecting to ${device.name || device.id}`);
+      const ok = await omi.connect(device.id, (_id, state) => {
+        if (state === 'disconnected') {
+          setConnectedDevice(null);
+          resetDeviceState();
+          setStatusMessage('Disconnected');
         }
       });
 
-      // Auto-stop scanning when connected successfully
-      if (success && scanning) {
-        stopScan();
+      if (!ok) {
+        setStatusMessage('Connection failed');
+        return;
       }
 
-      if (success) {
-        setConnected(true);
+      stopScanRef.current?.();
+      setScanning(false);
+      setConnectedDevice(device);
+      setStatusMessage(`Connected to ${device.name || device.id}`);
+
+      buttonSubRef.current?.remove();
+      buttonSubRef.current = await omi.startButtonListener((bytes) => {
+        setButtonEvents((prev) => [...prev.slice(-11), bytes]);
+      });
+
+      const [nextCodec, nextBattery, nextFeatures, nextLed, nextMic] = await Promise.all([
+        omi.getAudioCodec(),
+        omi.getBatteryLevel(),
+        omi.getFeatures(),
+        omi.getLedDimRatio(),
+        omi.getMicGain(),
+      ]);
+
+      setCodec(nextCodec);
+      setBatteryLevel(nextBattery >= 0 ? nextBattery : null);
+      setFeaturesValue(nextFeatures);
+      setLedDimRatio(nextLed);
+      setMicGain(nextMic);
+    } catch (error) {
+      setStatusMessage(`Connection error: ${String(error)}`);
+    }
+  };
+
+  const disconnect = async () => {
+    buttonSubRef.current?.remove();
+    buttonSubRef.current = null;
+    await omi.disconnect();
+    setConnectedDevice(null);
+    resetDeviceState();
+    setStatusMessage('Disconnected');
+  };
+
+  const refreshStorage = async () => {
+    try {
+      const status = await omi.getStorageStatus();
+      setStorageStatus(status);
+      if (status && status.fileCount > 0) {
+        setStorageFiles(await omi.listStorageFiles());
       } else {
-        setConnected(false);
-        Alert.alert('Connection Failed', 'Could not connect to device');
+        setStorageFiles([]);
       }
     } catch (error) {
-      console.error('Connection error:', error);
-      setConnected(false);
-      Alert.alert('Connection Error', String(error));
+      Alert.alert('Storage Error', String(error));
     }
   };
 
-  const disconnectFromDevice = async () => {
-    try {
-      // Stop audio listener if active
-      if (isListeningAudio) {
-        await stopAudioListener();
-      }
-
-
-      await omiConnection.disconnect();
-      setConnected(false);
-      setCodec(null);
-      setBatteryLevel(-1);
-    } catch (error) {
-      console.error('Disconnect error:', error);
+  const deleteFirstStorageFile = async () => {
+    const first = storageFiles[0];
+    if (!first) return;
+    const ok = await omi.deleteStorageFile(first.index);
+    setStatusMessage(ok ? `Deleted storage file #${first.index}` : `Failed to delete file #${first.index}`);
+    if (ok) {
+      await refreshStorage();
     }
   };
 
-  const startAudioListener = async () => {
+  const playHaptic = async () => {
+    const ok = await omi.playHaptic(1);
+    setStatusMessage(ok ? 'Played haptic' : 'Haptic failed');
+  };
+
+  const saveSelfHostedConfig = async () => {
     try {
-      if (!connected || !omiConnection.isConnected()) {
-        Alert.alert('Not Connected', 'Please connect to a device first');
+      await Promise.all([
+        AsyncStorage.setItem('omi.selfHosted.apiBaseUrl', apiBaseUrl),
+        AsyncStorage.setItem('omi.selfHosted.agentWsUrl', agentWsUrl),
+      ]);
+      setStatusMessage('Saved self-hosted endpoint config');
+    } catch (error) {
+      setStatusMessage(`Failed to save self-host config: ${String(error)}`);
+    }
+  };
+
+  const resetSelfHostedConfig = async () => {
+    const defaultApi = 'http://127.0.0.1:8080/';
+    const defaultWs = 'ws://127.0.0.1:8080/v1/agent/ws';
+    setApiBaseUrl(defaultApi);
+    setAgentWsUrl(defaultWs);
+    try {
+      await Promise.all([
+        AsyncStorage.setItem('omi.selfHosted.apiBaseUrl', defaultApi),
+        AsyncStorage.setItem('omi.selfHosted.agentWsUrl', defaultWs),
+      ]);
+      setStatusMessage('Reset self-hosted endpoint config');
+    } catch (error) {
+      setStatusMessage(`Failed to reset self-host config: ${String(error)}`);
+    }
+  };
+
+  const adjustLed = async (ratio: number) => {
+    const ok = await omi.setLedDimRatio(ratio);
+    if (ok) setLedDimRatio(ratio);
+  };
+
+  const adjustMic = async (gain: number) => {
+    const ok = await omi.setMicGain(gain);
+    if (ok) setMicGain(gain);
+  };
+
+  const normalizeBaseUrl = (value: string) => (value.endsWith('/') ? value : `${value}/`);
+
+  const checkBackend = async () => {
+    try {
+      const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}v1/health`);
+      const body = await response.json();
+      setBackendHealth(response.ok ? 'healthy' : `error ${response.status}`);
+      setStatusMessage(response.ok ? `Backend healthy: ${JSON.stringify(body)}` : `Backend check failed: ${response.status}`);
+    } catch (error) {
+      setBackendHealth('unreachable');
+      setStatusMessage(`Backend check failed: ${String(error)}`);
+    }
+  };
+
+  const uploadFileToSelfhost = async () => {
+    try {
+      const picked = await DocumentPicker.pickSingle({ copyTo: 'cachesDirectory' });
+      const form = new FormData();
+      form.append('files', {
+        uri: picked.fileCopyUri || picked.uri,
+        name: picked.name || 'upload.bin',
+        type: picked.type || 'application/octet-stream',
+      } as never);
+
+      const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}v1/sync-local-files`, {
+        method: 'POST',
+        body: form,
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        setUploadResult(`upload failed (${response.status})`);
+        setStatusMessage(`Upload failed: ${text}`);
         return;
       }
-
-      // Reset counter
-      setAudioPacketsReceived(0);
-
-      console.log('Starting audio bytes listener...');
-
-      // Use a counter and timer to batch UI updates
-      let packetCounter = 0;
-      const updateInterval = setInterval(() => {
-        if (packetCounter > 0) {
-          setAudioPacketsReceived(prev => prev + packetCounter);
-          packetCounter = 0;
-        }
-      }, 500); // Update UI every 500ms
-
-      const subscription = await omiConnection.startAudioBytesListener((bytes) => {
-        // Increment local counter instead of updating state directly
-        packetCounter++;
-
-        // If transcription is enabled and active, add to buffer for WebSocket
-        if (bytes.length > 0 && isTranscribing.current) {
-          audioBufferRef.current.push(new Uint8Array(bytes));
-        }
-      });
-
-      // Store interval reference for cleanup
-      updateIntervalRef.current = updateInterval;
-
-      if (subscription) {
-        audioSubscriptionRef.current = subscription;
-        updateIntervalRef.current = updateInterval;
-        setIsListeningAudio(true);
-
-        // If transcription was active, stop it when audio listener stops
-        if (isTranscribing.current) {
-          if (websocketRef.current) {
-            websocketRef.current.close();
-            websocketRef.current = null;
-          }
-
-          if (processingIntervalRef.current) {
-            clearInterval(processingIntervalRef.current);
-            processingIntervalRef.current = null;
-          }
-
-          isTranscribing.current = false;
-        }
-      } else {
-        Alert.alert('Error', 'Failed to start audio listener');
-      }
+      setUploadResult(text);
+      setStatusMessage('Uploaded file to selfhost backend');
     } catch (error) {
-      console.error('Start audio listener error:', error);
-      Alert.alert('Error', `Failed to start audio listener: ${error}`);
-    }
-  };
-
-  /**
-   * Initialize WebSocket transcription service with Deepgram
-   */
-  const initializeWebSocketTranscription = () => {
-    if (!deepgramApiKey) {
-      console.error('API key is required for transcription');
-      return;
-    }
-
-    try {
-      // Close any existing connection
-      if (websocketRef.current) {
-        websocketRef.current.close();
-        websocketRef.current = null;
-      }
-
-      // Clear any existing processing interval
-      if (processingIntervalRef.current) {
-        clearInterval(processingIntervalRef.current);
-        processingIntervalRef.current = null;
-      }
-
-      // Reset audio buffer
-      audioBufferRef.current = [];
-      isTranscribing.current = false;
-
-      // Create a new WebSocket connection to Deepgram with configuration in URL params
-      const params = new URLSearchParams({
-        sample_rate: '16000',
-        encoding: 'opus',
-        channels: '1',
-        model: 'nova-3',
-        language: 'en-US',
-        smart_format: 'true',
-        interim_results: 'false',
-        punctuate: 'true',
-        diarize: 'true'
-      });
-
-      const ws = new WebSocket(`wss://api.deepgram.com/v1/listen?${params.toString()}`, [], {
-        headers: {
-          'Authorization': `Token ${deepgramApiKey}`
-        }
-      });
-
-      ws.onopen = () => {
-        console.log('Deepgram WebSocket connection established');
-        isTranscribing.current = true;
-
-        // Start processing interval to send accumulated audio
-        processingIntervalRef.current = setInterval(() => {
-          if (audioBufferRef.current.length > 0 && isTranscribing.current) {
-            sendAudioToWebSocket();
-          }
-        }, 250); // Send audio every 250ms
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          console.log("Transcript received:", data);
-
-          // Check if we have a transcript
-          if (data.channel?.alternatives?.[0]?.transcript) {
-            const transcript = data.channel.alternatives[0].transcript.trim();
-
-            // Only update UI if we have actual text
-            if (transcript) {
-              setTranscription((prev) => {
-                // Limit to last 5 transcripts to avoid too much text
-                const lines = prev ? prev.split('\n') : [];
-                if (lines.length > 4) {
-                  lines.shift();
-                }
-
-                // Add new transcript with a timestamp
-                const now = new Date();
-                const timestamp = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
-
-                // Add speaker information if available
-                const speakerInfo = data.channel.alternatives[0].words?.[0]?.speaker
-                  ? `[Speaker ${data.channel.alternatives[0].words[0].speaker}]`
-                  : '';
-
-                lines.push(`[${timestamp}] ${speakerInfo} ${transcript}`);
-
-                return lines.join('\n');
-              });
-            }
-          }
-        } catch (error) {
-          console.error('Error parsing WebSocket message:', error);
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error('Deepgram WebSocket error:', error);
-      };
-
-      ws.onclose = () => {
-        console.log('Deepgram WebSocket connection closed');
-        isTranscribing.current = false;
-      };
-
-      websocketRef.current = ws;
-      console.log('Deepgram WebSocket transcription initialized');
-
-    } catch (error) {
-      console.error('Error initializing Deepgram WebSocket transcription:', error);
-    }
-  };
-
-  /**
-   * Send accumulated audio buffer to Deepgram WebSocket
-   */
-  const sendAudioToWebSocket = () => {
-    if (!websocketRef.current || !isTranscribing.current || audioBufferRef.current.length === 0) {
-      return;
-    }
-
-    try {
-      // Send each audio chunk individually to Deepgram
-      // This is more efficient for streaming audio
-      for (const chunk of audioBufferRef.current) {
-        if (websocketRef.current.readyState === WebSocket.OPEN) {
-          websocketRef.current.send(chunk);
-        }
-      }
-
-      // Clear the buffer after sending
-      audioBufferRef.current = [];
-    } catch (error) {
-      console.error('Error sending audio to Deepgram WebSocket:', error);
-    }
-  };
-
-
-  // Store the update interval reference
-  const updateIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  const stopAudioListener = async () => {
-    try {
-      // Clear the UI update interval
-      if (updateIntervalRef.current) {
-        clearInterval(updateIntervalRef.current);
-        updateIntervalRef.current = null;
-      }
-
-      if (audioSubscriptionRef.current) {
-        await omiConnection.stopAudioBytesListener(audioSubscriptionRef.current);
-        audioSubscriptionRef.current = null;
-        setIsListeningAudio(false);
-
-        // Disable transcription
-        if (enableTranscription) {
-          // Close WebSocket connection
-          if (websocketRef.current) {
-            websocketRef.current.close();
-            websocketRef.current = null;
-          }
-
-          // Clear processing interval
-          if (processingIntervalRef.current) {
-            clearInterval(processingIntervalRef.current);
-            processingIntervalRef.current = null;
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Stop audio listener error:', error);
-      Alert.alert('Error', `Failed to stop audio listener: ${error}`);
-    }
-  };
-
-  const getAudioCodec = async () => {
-    try {
-      if (!connected || !omiConnection.isConnected()) {
-        Alert.alert('Not Connected', 'Please connect to a device first');
+      if (DocumentPicker.isCancel(error)) {
+        setStatusMessage('Upload cancelled');
         return;
       }
-
-      try {
-        const codecValue = await omiConnection.getAudioCodec();
-        setCodec(codecValue);
-      } catch (error) {
-        console.error('Get codec error:', error);
-
-        // If we get a connection error, update the UI state
-        if (String(error).includes('not connected')) {
-          setConnected(false);
-          Alert.alert('Connection Lost', 'The device appears to be disconnected. Please reconnect and try again.');
-        } else {
-          Alert.alert('Error', `Failed to get audio codec: ${error}`);
-        }
-      }
-    } catch (error) {
-      console.error('Unexpected error:', error);
-      Alert.alert('Error', `An unexpected error occurred: ${error}`);
-    }
-  };
-
-  const getBatteryLevel = async () => {
-    try {
-      if (!connected || !omiConnection.isConnected()) {
-        Alert.alert('Not Connected', 'Please connect to a device first');
-        return;
-      }
-
-      try {
-        const level = await omiConnection.getBatteryLevel();
-        setBatteryLevel(level);
-      } catch (error) {
-        console.error('Get battery level error:', error);
-
-        // If we get a connection error, update the UI state
-        if (String(error).includes('not connected')) {
-          setConnected(false);
-          Alert.alert('Connection Lost', 'The device appears to be disconnected. Please reconnect and try again.');
-        } else {
-          Alert.alert('Error', `Failed to get battery level: ${error}`);
-        }
-      }
-    } catch (error) {
-      console.error('Unexpected error:', error);
-      Alert.alert('Error', `An unexpected error occurred: ${error}`);
+      setUploadResult(`error: ${String(error)}`);
+      setStatusMessage(`Upload error: ${String(error)}`);
     }
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.title}>Omi SDK Example</Text>
+        <Text style={styles.title}>Omi Pendant</Text>
+        <Text style={styles.subtitle}>A cleaner pendant-first app shell on top of the RN SDK.</Text>
 
-        {/* Bluetooth Status Banner */}
-        {bluetoothState !== State.PoweredOn && (
-          <View style={styles.statusBanner}>
-            <Text style={styles.statusText}>
-              {bluetoothState === State.PoweredOff
-                ? 'Bluetooth is turned off. Please enable Bluetooth to use this app.'
-                : bluetoothState === State.Unauthorized
-                  ? 'Bluetooth permission not granted. Please allow Bluetooth access in settings.'
-                  : 'Bluetooth is not available or initializing...'}
-            </Text>
-            <TouchableOpacity
-              style={styles.statusButton}
-              onPress={() => {
-                if (bluetoothState === State.PoweredOff) {
-                  Linking.openSettings();
-                } else if (bluetoothState === State.Unauthorized) {
-                  requestBluetoothPermission();
-                }
-              }}
-            >
-              <Text style={styles.statusButtonText}>
-                {bluetoothState === State.PoweredOff ? 'Open Settings' : 'Request Permission'}
-              </Text>
-            </TouchableOpacity>
+        <View style={styles.heroCard}>
+          <Text style={styles.heroLabel}>Status</Text>
+          <Text style={[styles.heroValue, { color: statusTone }]}>{statusMessage}</Text>
+          <Text style={styles.heroMeta}>
+            Bluetooth: {bluetoothState} • Permission: {permissionGranted ? 'granted' : 'pending'}
+          </Text>
+          <View style={styles.row}>
+            <PrimaryButton title={scanning ? 'Scanning…' : 'Scan'} onPress={scan} />
+            <SecondaryButton title="Disconnect" onPress={disconnect} disabled={!connectedDevice} />
           </View>
-        )}
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Bluetooth Connection</Text>
-          <TouchableOpacity
-            style={[styles.button, scanning ? styles.buttonWarning : null]}
-            onPress={scanning ? stopScan : startScan}
-          >
-            <Text style={styles.buttonText}>{scanning ? "Stop Scan" : "Scan for Devices"}</Text>
-          </TouchableOpacity>
         </View>
 
-        {devices.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Found Devices</Text>
-            <View style={styles.deviceList}>
-              {devices.map((device) => (
-                <View key={device.id} style={styles.deviceItem}>
-                  <View>
-                    <Text style={styles.deviceName}>{device.name}</Text>
-                    <Text style={styles.deviceInfo}>RSSI: {device.rssi} dBm</Text>
-                  </View>
-                  {connected && omiConnection.connectedDeviceId === device.id ? (
-                    <TouchableOpacity
-                      style={[styles.button, styles.smallButton, styles.buttonDanger]}
-                      onPress={disconnectFromDevice}
-                    >
-                      <Text style={styles.buttonText}>Disconnect</Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity
-                      style={[styles.button, styles.smallButton, connected ? styles.buttonDisabled : null]}
-                      onPress={() => connectToDevice(device.id)}
-                      disabled={connected}
-                    >
-                      <Text style={styles.buttonText}>Connect</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              ))}
-            </View>
+        <Section title="Devices">
+          {devices.length === 0 ? <Muted>No devices found yet.</Muted> : null}
+          {devices.map((device) => (
+            <Pressable key={device.id} style={styles.deviceCard} onPress={() => void connectToDevice(device)}>
+              <Text style={styles.deviceName}>{device.name || 'Unnamed device'}</Text>
+              <Text style={styles.deviceMeta}>{device.id}</Text>
+              <Text style={styles.deviceMeta}>RSSI {device.rssi} dBm</Text>
+            </Pressable>
+          ))}
+        </Section>
+
+        <Section title="Self-hosted backend">
+          <TextInput
+            style={styles.input}
+            value={apiBaseUrl}
+            onChangeText={setApiBaseUrl}
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="http://192.168.1.10:8080/"
+            placeholderTextColor={THEME.subtext}
+          />
+          <TextInput
+            style={styles.input}
+            value={agentWsUrl}
+            onChangeText={setAgentWsUrl}
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="ws://192.168.1.10:8080/v1/agent/ws"
+            placeholderTextColor={THEME.subtext}
+          />
+          <KeyValue label="Backend health" value={backendHealth} />
+          <KeyValue label="Last upload" value={uploadResult} />
+          <View style={styles.rowWrap}>
+            <SecondaryButton title="Use localhost" onPress={() => { setApiBaseUrl('http://127.0.0.1:8080/'); setAgentWsUrl('ws://127.0.0.1:8080/v1/agent/ws'); }} />
+            <SecondaryButton title="Use LAN sample" onPress={() => { setApiBaseUrl('http://192.168.1.10:8080/'); setAgentWsUrl('ws://192.168.1.10:8080/v1/agent/ws'); }} />
+            <PrimaryButton title="Save endpoints" onPress={saveSelfHostedConfig} />
+            <SecondaryButton title="Reset" onPress={resetSelfHostedConfig} />
+            <PrimaryButton title="Check backend" onPress={checkBackend} />
+            <PrimaryButton title="Upload file" onPress={uploadFileToSelfhost} />
           </View>
-        )}
+        </Section>
 
-        {connected && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Device Functions</Text>
-            <TouchableOpacity
-              style={styles.button}
-              onPress={getAudioCodec}
-            >
-              <Text style={styles.buttonText}>Get Audio Codec</Text>
-            </TouchableOpacity>
+        <Section title="Overview">
+          <KeyValue label="Connected" value={connectedDevice?.name || connectedDevice?.id || 'none'} />
+          <KeyValue label="Codec" value={codec || 'unknown'} />
+          <KeyValue label="Battery" value={batteryLevel != null ? `${batteryLevel}%` : 'unknown'} />
+          <KeyValue label="Features" value={String(featuresValue)} />
+        </Section>
 
-            {codec && (
-              <View style={styles.codecContainer}>
-                <Text style={styles.codecTitle}>Current Audio Codec:</Text>
-                <Text style={styles.codecValue}>{codec}</Text>
-              </View>
-            )}
-
-            <TouchableOpacity
-              style={[
-                styles.button,
-                { marginTop: 15 }
-              ]}
-              onPress={getBatteryLevel}
-            >
-              <Text style={styles.buttonText}>Get Battery Level</Text>
-            </TouchableOpacity>
-
-            {batteryLevel >= 0 && (
-              <View style={styles.batteryContainer}>
-                <Text style={styles.batteryTitle}>Battery Level:</Text>
-                <View style={styles.batteryLevelContainer}>
-                  <View style={[styles.batteryLevelBar, { width: `${batteryLevel}%` }]} />
-                  <Text style={styles.batteryLevelText}>{batteryLevel}%</Text>
-                </View>
-              </View>
-            )}
-
-            <View style={styles.audioControls}>
-              <TouchableOpacity
-                style={[
-                  styles.button,
-                  isListeningAudio ? styles.buttonWarning : null,
-                  { marginTop: 15 }
-                ]}
-                onPress={isListeningAudio ? stopAudioListener : startAudioListener}
-              >
-                <Text style={styles.buttonText}>
-                  {isListeningAudio ? "Stop Audio Listener" : "Start Audio Listener"}
-                </Text>
-              </TouchableOpacity>
-
-              {isListeningAudio && (
-                <View style={styles.audioStatsContainer}>
-                  <Text style={styles.audioStatsTitle}>Audio Packets Received:</Text>
-                  <Text style={styles.audioStatsValue}>{audioPacketsReceived}</Text>
-                </View>
-              )}
-
-              <View style={styles.transcriptionContainer}>
-                <Text style={styles.sectionSubtitle}>Deepgram Transcription</Text>
-
-                <View style={styles.checkboxContainer}>
-                  <TouchableOpacity
-                    style={[styles.checkbox, enableTranscription && styles.checkboxChecked]}
-                    onPress={() => {
-                      const newValue = !enableTranscription;
-                      setEnableTranscription(newValue);
-
-                      // If disabling, close any active connections
-                      if (!newValue && websocketRef.current) {
-                        websocketRef.current.close();
-                        websocketRef.current = null;
-
-                        if (processingIntervalRef.current) {
-                          clearInterval(processingIntervalRef.current);
-                          processingIntervalRef.current = null;
-                        }
-                      }
-                    }}
-                  >
-                    {enableTranscription && <Text style={styles.checkmark}>✓</Text>}
-                  </TouchableOpacity>
-                  <Text style={styles.checkboxLabel}>Enable Transcription</Text>
-                </View>
-
-                {enableTranscription && (
-                  <View style={styles.inputContainer}>
-                    <Text style={styles.inputLabel}>API Key:</Text>
-                    <TextInput
-                      style={styles.apiKeyInput}
-                      value={deepgramApiKey}
-                      onChangeText={(text) => {
-                        setDeepgramApiKey(text);
-                      }}
-                      placeholder="Enter Deepgram API Key"
-                      secureTextEntry={true}
-                    />
-                  </View>
-                )}
-
-
-                {enableTranscription && (
-                  <>
-                    <TouchableOpacity
-                      style={[
-                        styles.button,
-                        isTranscribing.current ? styles.buttonWarning : null,
-                        { marginTop: 15, marginBottom: 15 }
-                      ]}
-                      onPress={() => {
-                        if (isTranscribing.current) {
-                          // Stop transcription
-                          if (websocketRef.current) {
-                            websocketRef.current.close();
-                            websocketRef.current = null;
-                          }
-
-                          if (processingIntervalRef.current) {
-                            clearInterval(processingIntervalRef.current);
-                            processingIntervalRef.current = null;
-                          }
-
-                          isTranscribing.current = false;
-                        } else {
-                          // Start transcription
-                          if (!deepgramApiKey) {
-                            Alert.alert('API Key Required', 'Please enter your Deepgram API key to start transcription');
-                            return;
-                          }
-
-                          if (!isListeningAudio) {
-                            Alert.alert('Audio Required', 'Please start the audio listener first');
-                            return;
-                          }
-
-                          initializeWebSocketTranscription();
-                          setTranscription(''); // Clear previous transcription
-                        }
-                      }}
-                      disabled={!isListeningAudio}
-                    >
-                      <Text style={styles.buttonText}>
-                        {isTranscribing.current ? "Stop Transcription" : "Start Transcription"}
-                      </Text>
-                    </TouchableOpacity>
-
-                    {transcription && (
-                      <View style={styles.transcriptionTextContainer}>
-                        <Text style={styles.transcriptionTitle}>Transcription:</Text>
-                        <Text style={styles.transcriptionText}>{transcription}</Text>
-                      </View>
-                    )}
-                  </>
-                )}
-              </View>
-            </View>
+        <Section title="Controls">
+          <View style={styles.rowWrap}>
+            <PrimaryButton title="Sync Time" onPress={() => omi.syncTime()} disabled={!connectedDevice} />
+            <PrimaryButton title="Refresh Storage" onPress={refreshStorage} disabled={!connectedDevice} />
+            <PrimaryButton title="Haptic" onPress={playHaptic} disabled={!connectedDevice} />
+            <SecondaryButton title="Delete First File" onPress={deleteFirstStorageFile} disabled={!storageFiles.length} />
           </View>
-        )}
+        </Section>
+
+        <Section title="Settings">
+          <KeyValue label="LED Dim" value={ledDimRatio != null ? `${ledDimRatio}` : 'n/a'} />
+          <View style={styles.rowWrap}>
+            <SecondaryButton title="LED 0" onPress={() => adjustLed(0)} disabled={!connectedDevice} />
+            <SecondaryButton title="LED 50" onPress={() => adjustLed(50)} disabled={!connectedDevice} />
+            <SecondaryButton title="LED 100" onPress={() => adjustLed(100)} disabled={!connectedDevice} />
+          </View>
+          <View style={styles.spacer} />
+          <KeyValue label="Mic Gain" value={micGain != null ? `${micGain}` : 'n/a'} />
+          <View style={styles.rowWrap}>
+            <SecondaryButton title="Mic 0" onPress={() => adjustMic(0)} disabled={!connectedDevice} />
+            <SecondaryButton title="Mic 50" onPress={() => adjustMic(50)} disabled={!connectedDevice} />
+            <SecondaryButton title="Mic 100" onPress={() => adjustMic(100)} disabled={!connectedDevice} />
+          </View>
+        </Section>
+
+        <Section title="Storage">
+          <KeyValue label="Used" value={storageStatus ? `${storageStatus.totalUsedBytes} bytes` : 'n/a'} />
+          <KeyValue label="Files" value={storageStatus ? `${storageStatus.fileCount}` : '0'} />
+          {storageFiles.length === 0 ? <Muted>No storage files loaded.</Muted> : null}
+          {storageFiles.map((file) => (
+            <View key={`${file.index}-${file.timestamp}`} style={styles.inlineItem}>
+              <Text style={styles.inlinePrimary}>#{file.index}</Text>
+              <Text style={styles.inlineSecondary}>ts {file.timestamp} • {file.sizeBytes} bytes</Text>
+            </View>
+          ))}
+        </Section>
+
+        <Section title="Recent Button Events">
+          {buttonEvents.length === 0 ? <Muted>No button events yet.</Muted> : null}
+          {buttonEvents.map((event, index) => (
+            <Text key={index} style={styles.codeLine}>{JSON.stringify(event)}</Text>
+          ))}
+        </Section>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      {children}
+    </View>
+  );
+}
+
+function KeyValue({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.keyValueRow}>
+      <Text style={styles.keyLabel}>{label}</Text>
+      <Text style={styles.keyValue}>{value}</Text>
+    </View>
+  );
+}
+
+function Muted({ children }: { children: React.ReactNode }) {
+  return <Text style={styles.muted}>{children}</Text>;
+}
+
+function PrimaryButton({ title, onPress, disabled }: { title: string; onPress: () => void | Promise<void>; disabled?: boolean }) {
+  return (
+    <Pressable disabled={disabled} onPress={() => void onPress()} style={[styles.button, styles.primaryButton, disabled && styles.buttonDisabled]}>
+      <Text style={styles.buttonText}>{title}</Text>
+    </Pressable>
+  );
+}
+
+function SecondaryButton({ title, onPress, disabled }: { title: string; onPress: () => void | Promise<void>; disabled?: boolean }) {
+  return (
+    <Pressable disabled={disabled} onPress={() => void onPress()} style={[styles.button, styles.secondaryButton, disabled && styles.buttonDisabled]}>
+      <Text style={styles.buttonText}>{title}</Text>
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
-  },
-  statusBanner: {
-    backgroundColor: '#FF9500',
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 15,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  statusText: {
-    color: 'white',
-    fontSize: 14,
-    fontWeight: '500',
-    flex: 1,
-    marginRight: 10,
-  },
-  statusButton: {
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 6,
-  },
-  statusButtonText: {
-    color: 'white',
-    fontWeight: '600',
-    fontSize: 12,
+    backgroundColor: THEME.bg,
   },
   content: {
     padding: 20,
-    paddingTop: Platform.OS === 'android' ? 40 : 0,
-    paddingBottom: 200,
+    gap: 16,
   },
   title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 20,
-    color: '#333',
-    textAlign: 'center',
+    color: THEME.text,
+    fontSize: 30,
+    fontWeight: '700',
+  },
+  subtitle: {
+    color: THEME.subtext,
+    fontSize: 15,
+  },
+  heroCard: {
+    backgroundColor: THEME.panel,
+    borderRadius: 18,
+    padding: 16,
+    gap: 8,
+  },
+  heroLabel: {
+    color: THEME.subtext,
+    fontSize: 13,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  heroValue: {
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  heroMeta: {
+    color: THEME.subtext,
+    fontSize: 13,
   },
   section: {
-    marginBottom: 25,
-    padding: 15,
-    backgroundColor: 'white',
-    borderRadius: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    elevation: 2,
+    backgroundColor: THEME.panel,
+    borderRadius: 18,
+    padding: 16,
+    gap: 10,
   },
   sectionTitle: {
+    color: THEME.text,
     fontSize: 18,
     fontWeight: '600',
-    marginBottom: 15,
-    color: '#333',
+  },
+  row: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  rowWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
   },
   button: {
-    backgroundColor: '#007AFF',
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 8,
-    alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 12,
   },
-  smallButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+  primaryButton: {
+    backgroundColor: '#0ea5e9',
   },
-  buttonWarning: {
-    backgroundColor: '#FF9500',
-  },
-  buttonDanger: {
-    backgroundColor: '#FF3B30',
+  secondaryButton: {
+    backgroundColor: THEME.panelAlt,
+    borderWidth: 1,
+    borderColor: '#334155',
   },
   buttonDisabled: {
-    backgroundColor: '#A0A0A0',
-    opacity: 0.7,
+    opacity: 0.5,
   },
   buttonText: {
-    color: 'white',
-    fontSize: 16,
+    color: THEME.text,
     fontWeight: '600',
   },
-  responseContainer: {
-    marginTop: 15,
+  deviceCard: {
     padding: 12,
-    backgroundColor: '#f0f0f0',
-    borderRadius: 8,
-    borderLeftWidth: 4,
-    borderLeftColor: '#007AFF',
+    borderRadius: 14,
+    backgroundColor: THEME.panelAlt,
+    gap: 4,
   },
-  responseTitle: {
-    fontSize: 14,
+  deviceName: {
+    color: THEME.text,
     fontWeight: '600',
-    marginBottom: 5,
-    color: '#555',
   },
-  responseText: {
-    fontSize: 14,
-    color: '#333',
+  deviceMeta: {
+    color: THEME.subtext,
+    fontSize: 12,
   },
-  deviceList: {
-    marginTop: 5,
-  },
-  deviceItem: {
+  keyValueRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
   },
-  deviceName: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: '#333',
+  keyLabel: {
+    color: THEME.subtext,
   },
-  deviceInfo: {
-    fontSize: 12,
-    color: '#666',
-    marginTop: 2,
-  },
-  codecContainer: {
-    marginTop: 15,
-    padding: 12,
-    backgroundColor: '#f0f0f0',
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  codecTitle: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#555',
-  },
-  codecValue: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#007AFF',
-    marginTop: 5,
-  },
-  audioControls: {
-    marginTop: 10,
-  },
-  audioStatsContainer: {
-    marginTop: 15,
-    padding: 12,
-    backgroundColor: '#f0f0f0',
-    borderRadius: 8,
-    alignItems: 'center',
-    borderLeftWidth: 4,
-    borderLeftColor: '#FF9500',
-  },
-  audioStatsTitle: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#555',
-  },
-  audioStatsValue: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#FF9500',
-    marginTop: 5,
-  },
-  batteryContainer: {
-    marginTop: 15,
-    padding: 12,
-    backgroundColor: '#f0f0f0',
-    borderRadius: 8,
-    alignItems: 'center',
-    borderLeftWidth: 4,
-    borderLeftColor: '#4CD964',
-  },
-  batteryTitle: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#555',
-  },
-  batteryLevelContainer: {
-    width: '100%',
-    height: 24,
-    backgroundColor: '#e0e0e0',
-    borderRadius: 12,
-    marginTop: 8,
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  batteryLevelBar: {
-    height: '100%',
-    backgroundColor: '#4CD964',
-    borderRadius: 12,
-    position: 'absolute',
-    left: 0,
-    top: 0,
-  },
-  batteryLevelText: {
-    position: 'absolute',
-    width: '100%',
-    textAlign: 'center',
-    lineHeight: 24,
-    fontSize: 12,
-    fontWeight: 'bold',
-    color: '#333',
-  },
-  transcriptionContainer: {
-    marginTop: 20,
-    padding: 15,
-    backgroundColor: '#f8f8f8',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-  },
-  sectionSubtitle: {
-    fontSize: 16,
+  keyValue: {
+    color: THEME.text,
     fontWeight: '600',
-    marginBottom: 12,
-    color: '#333',
   },
-  inputContainer: {
-    marginBottom: 12,
+  muted: {
+    color: THEME.subtext,
   },
-  inputLabel: {
-    fontSize: 14,
-    fontWeight: '500',
-    marginBottom: 6,
-    color: '#555',
-  },
-  apiKeyInput: {
-    backgroundColor: 'white',
+  input: {
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 6,
-    padding: 10,
-    fontSize: 14,
+    borderColor: '#334155',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: THEME.text,
+    backgroundColor: THEME.panelAlt,
   },
-  checkboxContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 15,
+  inlineItem: {
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
   },
-  checkbox: {
-    width: 22,
-    height: 22,
-    borderWidth: 1,
-    borderColor: '#007AFF',
-    borderRadius: 4,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 10,
+  inlinePrimary: {
+    color: THEME.text,
+    fontWeight: '600',
   },
-  checkboxChecked: {
-    backgroundColor: '#007AFF',
+  inlineSecondary: {
+    color: THEME.subtext,
+    fontSize: 12,
   },
-  checkmark: {
-    color: 'white',
-    fontSize: 14,
-    fontWeight: 'bold',
+  codeLine: {
+    color: '#cbd5e1',
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
+    fontSize: 12,
   },
-  checkboxLabel: {
-    fontSize: 14,
-    color: '#333',
-  },
-  transcriptionTextContainer: {
-    marginTop: 12,
-    padding: 10,
-    backgroundColor: 'white',
-    borderRadius: 6,
-    borderLeftWidth: 3,
-    borderLeftColor: '#007AFF',
-  },
-  transcriptionTitle: {
-    fontSize: 14,
-    fontWeight: '500',
-    marginBottom: 6,
-    color: '#555',
-  },
-  transcriptionText: {
-    fontSize: 14,
-    color: '#333',
-    lineHeight: 20,
+  spacer: {
+    height: 4,
   },
 });

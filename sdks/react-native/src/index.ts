@@ -6,7 +6,7 @@
 // Export types and classes
 export { OmiConnection } from './OmiConnection';
 export { BleAudioCodec } from './types';
-export { 
+export {
   DeviceConnectionState
 } from './types';
 export type { 
@@ -14,7 +14,10 @@ export type {
   OmiNativeModule,
   AudioProcessingOptions,
   AudioDataEvent,
-  ConnectionStateEvent
+  ConnectionStateEvent,
+  StorageStatus,
+  StorageFileInfo,
+  DownloadedStorageFile
 } from './types';
 export { mapCodecToName } from './codecs';
 
