@@ -113,6 +113,32 @@ async function connectToDevice(deviceId) {
 ```
 
 
+## Storage protocol notes
+
+Core audio/features and offline storage use different BLE UUID families.
+
+### Core Omi service family
+- Main service: `19b10000-e8f2-537e-4f6c-d104768a1214`
+- Audio stream: `19b10001-e8f2-537e-4f6c-d104768a1214`
+- Audio codec: `19b10002-e8f2-537e-4f6c-d104768a1214`
+- Features service: `19b10020-e8f2-537e-4f6c-d104768a1214`
+- Features characteristic: `19b10021-e8f2-537e-4f6c-d104768a1214`
+- Time sync service: `19b10030-e8f2-537e-4f6c-d104768a1214`
+- Time sync characteristic: `19b10031-e8f2-537e-4f6c-d104768a1214`
+
+### Storage service family
+- Storage service: `30295780-4301-eabd-2904-2849adfeae43`
+- Storage write and notify characteristic: `30295781-4301-eabd-2904-2849adfeae43`
+- Storage read and status characteristic: `30295782-4301-eabd-2904-2849adfeae43`
+
+### Storage commands
+- List files: `0x10`
+- Read file: `0x11`
+- Delete file: `0x12`
+- Stop sync: `0x03`
+
+Storage stats are read from the storage read characteristic. File list and download responses are delivered via notifications on the storage write characteristic.
+
 ## Troubleshooting
 
 <AccordionGroup>

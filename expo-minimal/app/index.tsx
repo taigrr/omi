@@ -1,22 +1,12 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as DocumentPicker from 'expo-document-picker';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 import base64 from 'react-native-base64';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useStoredAppState, DEFAULT_AGENT_WS_URL, DEFAULT_API_BASE_URL, normalizeBaseUrl, type RecordingItem } from '@/hooks/useAppState';
 import { useOmiBle } from '@/hooks/useOmiBle';
 import { useOmiQueries } from '@/hooks/useOmiQueries';
-
-type RecordingItem = {
-  id: string;
-  fileIndex: number;
-  timestamp: number;
-  sizeBytes: number;
-  localUri: string;
-  uploadedAt: number | null;
-};
 
 const THEME = {
   bg: '#0f172a',
@@ -29,25 +19,24 @@ const THEME = {
   warn: '#f59e0b',
 };
 
-const STORAGE_KEYS = {
-  apiBaseUrl: 'omi.selfHosted.apiBaseUrl',
-  agentWsUrl: 'omi.selfHosted.agentWsUrl',
-  recordings: 'omi.recordings.items',
-};
-
-const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8080/';
-const DEFAULT_AGENT_WS_URL = 'ws://127.0.0.1:8080/v1/agent/ws';
 const RECORDINGS_DIR = new FileSystem.Directory(FileSystem.Paths.document, 'omi-recordings');
 
 export default function HomeScreen() {
   const ble = useOmiBle();
   const { batteryQuery, featuresQuery, storageStatusQuery, connectMutation, refreshDeviceState } = useOmiQueries(ble);
+  const {
+    configQuery,
+    recordingsQuery,
+    saveConfigMutation,
+    resetConfigMutation,
+    persistRecordingsMutation,
+    backendHealthMutation,
+    uploadPickedFileMutation,
+  } = useStoredAppState();
   const soundRef = useRef<Audio.Sound | null>(null);
   const [status, setStatus] = useState('idle');
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
   const [agentWsUrl, setAgentWsUrl] = useState(DEFAULT_AGENT_WS_URL);
-  const [backendHealth, setBackendHealth] = useState('unknown');
-  const [uploadResult, setUploadResult] = useState('none');
   const [recordings, setRecordings] = useState<RecordingItem[]>([]);
   const [recordingsVisible, setRecordingsVisible] = useState(false);
   const [currentPlaybackId, setCurrentPlaybackId] = useState<string | null>(null);
@@ -55,23 +44,7 @@ export default function HomeScreen() {
   const [featureSummary, setFeatureSummary] = useState('unknown');
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        RECORDINGS_DIR.create({ idempotent: true, intermediates: true });
-        const [savedApiBaseUrl, savedAgentWsUrl, savedRecordings] = await Promise.all([
-          AsyncStorage.getItem(STORAGE_KEYS.apiBaseUrl),
-          AsyncStorage.getItem(STORAGE_KEYS.agentWsUrl),
-          AsyncStorage.getItem(STORAGE_KEYS.recordings),
-        ]);
-        if (savedApiBaseUrl) setApiBaseUrl(savedApiBaseUrl);
-        if (savedAgentWsUrl) setAgentWsUrl(savedAgentWsUrl);
-        if (savedRecordings) setRecordings(JSON.parse(savedRecordings) as RecordingItem[]);
-      } catch (error) {
-        setStatus(`failed to load config: ${String(error)}`);
-      }
-    };
-
-    void load();
+    RECORDINGS_DIR.create({ idempotent: true, intermediates: true });
     void ble.requestPermissions();
 
     return () => {
@@ -79,84 +52,64 @@ export default function HomeScreen() {
     };
   }, [ble]);
 
-  const persistRecordings = useCallback(async (next: RecordingItem[]) => {
-    setRecordings(next);
-    await AsyncStorage.setItem(STORAGE_KEYS.recordings, JSON.stringify(next));
-  }, []);
+  useEffect(() => {
+    if (configQuery.data) {
+      setApiBaseUrl(configQuery.data.apiBaseUrl);
+      setAgentWsUrl(configQuery.data.agentWsUrl);
+    }
+  }, [configQuery.data]);
 
-  const normalizeBaseUrl = useCallback((value: string) => (value.endsWith('/') ? value : `${value}/`), []);
+  useEffect(() => {
+    if (recordingsQuery.data) {
+      setRecordings(recordingsQuery.data);
+    }
+  }, [recordingsQuery.data]);
 
   const saveConfig = useCallback(async () => {
     try {
-      await Promise.all([
-        AsyncStorage.setItem(STORAGE_KEYS.apiBaseUrl, apiBaseUrl),
-        AsyncStorage.setItem(STORAGE_KEYS.agentWsUrl, agentWsUrl),
-      ]);
+      await saveConfigMutation.mutateAsync({ apiBaseUrl, agentWsUrl });
       setStatus('saved backend config');
     } catch (error) {
       setStatus(`failed to save config: ${String(error)}`);
     }
-  }, [agentWsUrl, apiBaseUrl]);
+  }, [agentWsUrl, apiBaseUrl, saveConfigMutation]);
 
   const resetConfig = useCallback(async () => {
     setApiBaseUrl(DEFAULT_API_BASE_URL);
     setAgentWsUrl(DEFAULT_AGENT_WS_URL);
     try {
-      await Promise.all([
-        AsyncStorage.setItem(STORAGE_KEYS.apiBaseUrl, DEFAULT_API_BASE_URL),
-        AsyncStorage.setItem(STORAGE_KEYS.agentWsUrl, DEFAULT_AGENT_WS_URL),
-      ]);
+      await resetConfigMutation.mutateAsync();
       setStatus('reset backend config');
     } catch (error) {
       setStatus(`failed to reset config: ${String(error)}`);
     }
-  }, []);
+  }, [resetConfigMutation]);
 
   const checkBackend = useCallback(async () => {
     try {
-      const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}v1/health`);
-      const body = await response.text();
-      setBackendHealth(response.ok ? 'healthy' : `error ${response.status}`);
-      setStatus(response.ok ? `backend ok: ${body}` : `backend failed: ${response.status}`);
+      const result = await backendHealthMutation.mutateAsync({ apiBaseUrl });
+      setStatus(result.ok ? `backend ok: ${result.body}` : `backend failed: ${result.status}`);
     } catch (error) {
-      setBackendHealth('unreachable');
       setStatus(`backend failed: ${String(error)}`);
     }
-  }, [apiBaseUrl, normalizeBaseUrl]);
+  }, [apiBaseUrl, backendHealthMutation]);
 
   const uploadFileToSelfhost = useCallback(async () => {
     try {
-      const picked = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true, multiple: false });
-      if (picked.canceled) {
+      const result = await uploadPickedFileMutation.mutateAsync({ apiBaseUrl });
+      if (result.cancelled) {
         setStatus('upload cancelled');
         return;
       }
-
-      const asset = picked.assets[0];
-      const form = new FormData();
-      form.append('files', {
-        uri: asset.uri,
-        name: asset.name || 'upload.bin',
-        type: asset.mimeType || 'application/octet-stream',
-      } as never);
-
-      const response = await fetch(`${normalizeBaseUrl(apiBaseUrl)}v1/sync-local-files`, {
-        method: 'POST',
-        body: form,
-      });
-      const text = await response.text();
-      if (!response.ok) {
-        setUploadResult(`upload failed (${response.status})`);
-        setStatus(`upload failed: ${text}`);
+      if (!result.ok) {
+        setStatus(`upload failed: ${result.text}`);
         return;
       }
-      setUploadResult(text || 'uploaded');
       setStatus('uploaded file to selfhost backend');
     } catch (error) {
-      setUploadResult(`error: ${String(error)}`);
       setStatus(`upload error: ${String(error)}`);
     }
-  }, [apiBaseUrl, normalizeBaseUrl]);
+  }, [apiBaseUrl, uploadPickedFileMutation]);
 
   const unloadSound = useCallback(async () => {
     if (soundRef.current) {
@@ -205,19 +158,17 @@ export default function HomeScreen() {
       });
       const text = await response.text();
       if (!response.ok) {
-        setUploadResult(`upload failed (${response.status})`);
         setStatus(`recording upload failed: ${text}`);
         return;
       }
 
       const next = recordings.map((item) => item.id === recording.id ? { ...item, uploadedAt: Date.now() } : item);
-      await persistRecordings(next);
-      setUploadResult(text || 'uploaded');
+      await persistRecordingsMutation.mutateAsync(next);
       setStatus(`uploaded recording ${recording.fileIndex}`);
     } catch (error) {
       setStatus(`recording upload error: ${String(error)}`);
     }
-  }, [apiBaseUrl, normalizeBaseUrl, persistRecordings, recordings]);
+  }, [apiBaseUrl, recordings, persistRecordingsMutation]);
 
   const syncRecordingsDown = useCallback(async () => {
     try {
@@ -266,12 +217,12 @@ export default function HomeScreen() {
         existingIds.add(id);
       }
 
-      await persistRecordings(nextRecordings.sort((a, b) => b.timestamp - a.timestamp));
+      await persistRecordingsMutation.mutateAsync(nextRecordings.sort((a, b) => b.timestamp - a.timestamp));
       setStatus(`synced ${remoteFiles.length} recording(s) from pendant`);
     } catch (error) {
       setStatus(`recording sync failed: ${String(error)}`);
     }
-  }, [ble, persistRecordings, recordings]);
+  }, [ble, persistRecordingsMutation, recordings]);
 
   const uploadPendingRecordings = useCallback(async () => {
     const pending = recordings.filter((item) => !item.uploadedAt);
@@ -395,8 +346,8 @@ export default function HomeScreen() {
             placeholder={DEFAULT_AGENT_WS_URL}
             placeholderTextColor={THEME.subtext}
           />
-          <KeyValue label="Backend health" value={backendHealth} />
-          <KeyValue label="Last upload" value={uploadResult} />
+          <KeyValue label="Backend health" value={backendHealthMutation.data ? (backendHealthMutation.data.ok ? 'healthy' : `error ${backendHealthMutation.data.status}`) : 'unknown'} />
+          <KeyValue label="Last upload" value={uploadPickedFileMutation.data ? (uploadPickedFileMutation.data.cancelled ? 'cancelled' : uploadPickedFileMutation.data.text || 'uploaded') : 'none'} />
           <View style={styles.rowWrap}>
             <SecondaryButton title="Use localhost" onPress={() => {
               setApiBaseUrl(DEFAULT_API_BASE_URL);
